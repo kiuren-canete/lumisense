@@ -132,11 +132,13 @@ class _FloorPlanWidgetState extends State<FloorPlanWidget> {
       case 'table dragging':
       case 'chair drag':
       case 'furniture_dragging':
+      case 'table_dragging':
         return LucideIcons.armchair;
       case 'object drop':
         return LucideIcons.box;
       case 'ring phone':
       case 'phone_ringing':
+      case 'phone':
         return LucideIcons.phoneCall;
       case 'notification':
         return LucideIcons.bell;
