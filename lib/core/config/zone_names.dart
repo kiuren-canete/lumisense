@@ -15,11 +15,14 @@ class ZoneNames {
   ZoneNames._();
 
   // Physical layout (see floor_plan_widget.dart for exact map coordinates):
-  //   Zone 1 = top table       (was "IT Department")
-  //   Zone 2 = left-mid table  (was "CS Department")
-  //   Zone 3 = bottom table    (was "Engineering Department")
-  static const String zone1 = 'STEM/HUMSS';
-  static const String zone2 = 'HIGHSCHOOL';
+  //   Zone 1 = top table       (was "IT Department"   -> now HIGHSCHOOL)
+  //   Zone 2 = left-mid table  (was "CS Department"   -> now STEM/HUMSS)
+  //   Zone 3 = bottom table    (was "Engineering Department" -> now GAS/TVL)
+  // The ESP32 firmware (Lumisense.ino) must use the same numbers:
+  //   ZONE_ID 1 = HIGHSCHOOL board, 2 = STEM/HUMSS board, 3 = GAS/TVL board.
+  // This also matches the `zones` table in Supabase (1 HIGHSCHOOL, 2 STEM/HUMSS, 3 GAS/TVL).
+  static const String zone1 = 'HIGHSCHOOL';
+  static const String zone2 = 'STEM/HUMSS';
   static const String zone3 = 'GAS/TVL';
 
   static const Map<int, String> byZoneId = {1: zone1, 2: zone2, 3: zone3};
