@@ -57,7 +57,7 @@ class MLInferenceService {
     }
 
     try {
-      _interpreter = await Interpreter.fromAsset('models/sound_classifier.tflite');
+      _interpreter = await Interpreter.fromAsset('assets/models/sound_classifier.tflite');
       final labelData = await rootBundle.loadString('assets/models/class_labels.txt');
       _labels = labelData.split('\n').where((l) => l.isNotEmpty).toList();
       final scalerData = await rootBundle.loadString('assets/models/scaler_params.txt');
@@ -73,7 +73,7 @@ class MLInferenceService {
   Future<void> _initializeFineGrained() async {
     try {
       _fineInterpreter =
-          await Interpreter.fromAsset('models/sound_classifier_finegrained.tflite');
+          await Interpreter.fromAsset('assets/models/sound_classifier_finegrained.tflite');
       final labelData =
           await rootBundle.loadString('assets/models/class_labels_finegrained.txt');
       _fineLabels = labelData.split('\n').where((l) => l.isNotEmpty).toList();
