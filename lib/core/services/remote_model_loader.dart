@@ -2,21 +2,21 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// Checks Supabase for an admin-uploaded replacement AI model and
+/// Checks Supabase for an admin-uploaded replacement sound model and
 /// downloads it into local app storage if it's newer than what's already
-/// cached on disk. This is what lets the client swap models (the sound
-/// type classifier, or the noise source classifier) without needing a new
-/// app build — the bundled asset in `assets/models/` is always the
-/// fallback if nothing has been uploaded yet, or if the download fails.
+/// cached on disk. This lets the client swap the model without a new app
+/// build — the bundled `assets/models/sound_model.json` is always the
+/// fallback if nothing has been uploaded yet, or if the download fails
+/// or the file is not a valid model.
+///
+/// A model is ONE .json file (made by ai_training/train_sound_model.py).
 class RemoteModelLoader {
   static const _bucket = 'ml-models';
 
-  /// Returns local file paths for {tflite, labels, scaler} if a remote
-  /// model is available and was downloaded (or already cached)
-  /// successfully. Returns null if nothing has been uploaded for
-  /// [modelType] yet, or if anything goes wrong — callers should fall
-  /// back to the bundled asset in that case.
-  static Future<Map<String, String>?> fetch(String modelType) async {
+  /// Returns the local path of the downloaded model .json if a remote
+  /// model is available (or already cached), otherwise null — callers
+  /// then fall back to the bundled model.
+  static Future<String?> fetch(String modelType) async {
     try {
       final client = Supabase.instance.client;
       final row = await client
@@ -31,75 +31,57 @@ class RemoteModelLoader {
       final modelDir = Directory('${supportDir.path}/ml_models/$modelType');
       await modelDir.create(recursive: true);
 
-      final tflitePath = '${modelDir.path}/model.tflite';
-      final labelsPath = '${modelDir.path}/labels.txt';
-      final scalerPath = '${modelDir.path}/scaler.txt';
-      final versionMarker = File('${modelDir.path}/.version');
+      final modelPath = '${modelDir.path}/model.json';
+      final versionMarker = File('${modelDir.path}/.version_json');
       final versionTag = row['version_tag'] as String;
 
       final alreadyCached = await versionMarker.exists() &&
           (await versionMarker.readAsString()).trim() == versionTag &&
-          await File(tflitePath).exists();
+          await File(modelPath).exists();
 
       if (!alreadyCached) {
-        final storage = client.storage.from(_bucket);
-
-        final tfliteBytes = await storage.download(row['storage_path'] as String);
-        final labelsBytes = await storage.download(row['labels_path'] as String);
-        final scalerBytes = await storage.download(row['scaler_path'] as String);
-
-        await File(tflitePath).writeAsBytes(tfliteBytes);
-        await File(labelsPath).writeAsBytes(labelsBytes);
-        await File(scalerPath).writeAsBytes(scalerBytes);
+        final bytes = await client.storage
+            .from(_bucket)
+            .download(row['storage_path'] as String);
+        await File(modelPath).writeAsBytes(bytes);
         await versionMarker.writeAsString(versionTag);
       }
 
-      return {'tflite': tflitePath, 'labels': labelsPath, 'scaler': scalerPath};
+      return modelPath;
     } catch (_) {
       // Offline, bucket not set up yet, corrupt row, etc. — never let a
-      // bad remote model prevent the app from starting. Caller falls
-      // back to the bundled asset.
+      // bad remote model prevent the app from starting.
       return null;
     }
   }
 
-  /// Uploads a replacement model (3 files) and marks it as the current
-  /// version for [modelType]. Every device will pick it up next time
-  /// [fetch] runs (app startup), no rebuild required.
+  /// Uploads a replacement model (one .json file) and marks it as the
+  /// current version for [modelType]. Every device picks it up the next
+  /// time [fetch] runs (app startup), no rebuild required.
   static Future<bool> upload({
     required String modelType,
-    required File tfliteFile,
-    required File labelsFile,
-    required File scalerFile,
+    required File modelFile,
     String? uploadedBy,
   }) async {
     try {
       final client = Supabase.instance.client;
       final versionTag = DateTime.now().millisecondsSinceEpoch.toString();
-      final storage = client.storage.from(_bucket);
+      final path = '$modelType/$versionTag/model.json';
 
-      final tflitePath = '$modelType/$versionTag/model.tflite';
-      final labelsPath = '$modelType/$versionTag/labels.txt';
-      final scalerPath = '$modelType/$versionTag/scaler.txt';
+      await client.storage.from(_bucket).uploadBinary(
+            path,
+            await modelFile.readAsBytes(),
+            fileOptions: const FileOptions(upsert: true),
+          );
 
-      await storage.uploadBinary(
-        tflitePath, await tfliteFile.readAsBytes(),
-        fileOptions: const FileOptions(upsert: true),
-      );
-      await storage.uploadBinary(
-        labelsPath, await labelsFile.readAsBytes(),
-        fileOptions: const FileOptions(upsert: true),
-      );
-      await storage.uploadBinary(
-        scalerPath, await scalerFile.readAsBytes(),
-        fileOptions: const FileOptions(upsert: true),
-      );
-
+      // ml_model_versions still has labels_path / scaler_path columns that
+      // cannot be empty. The labels and scaler now live inside the one JSON
+      // file, so all three columns point at it.
       await client.from('ml_model_versions').upsert({
         'model_type': modelType,
-        'storage_path': tflitePath,
-        'labels_path': labelsPath,
-        'scaler_path': scalerPath,
+        'storage_path': path,
+        'labels_path': path,
+        'scaler_path': path,
         'version_tag': versionTag,
         'uploaded_by': uploadedBy,
         'updated_at': DateTime.now().toIso8601String(),
@@ -112,7 +94,7 @@ class RemoteModelLoader {
   }
 
   /// The currently-active version tag for [modelType], or null if no
-  /// custom model has been uploaded (still using the bundled asset).
+  /// custom model has been uploaded (still using the bundled model).
   static Future<String?> currentVersion(String modelType) async {
     try {
       final row = await Supabase.instance.client
