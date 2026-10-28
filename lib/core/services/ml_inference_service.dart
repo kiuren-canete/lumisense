@@ -1,202 +1,380 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
 import 'remote_model_loader.dart';
 
-/// Service that runs the trained ANN model(s) to classify sounds.
+/// One row of `sensor_readings` (what one ESP32 sent at one moment).
+class SensorReading {
+  const SensorReading({
+    required this.id,
+    required this.time,
+    required this.avg,
+    required this.peak,
+    required this.min,
+    required this.rms,
+  });
+
+  final int id;
+  final DateTime time;
+  final double avg;
+  final double peak;
+  final double min;
+  final double rms;
+}
+
+class _DenseLayer {
+  _DenseLayer({
+    required this.weights,
+    required this.bias,
+    required this.activation,
+  });
+
+  /// weights[i][j] = connection from input i to output j
+  final List<List<double>> weights;
+  final List<double> bias;
+  final String activation; // 'relu' | 'softmax'
+
+  List<double> forward(List<double> input) {
+    final out = List<double>.from(bias);
+    for (int i = 0; i < input.length; i++) {
+      final xi = input[i];
+      final row = weights[i];
+      for (int j = 0; j < out.length; j++) {
+        out[j] += xi * row[j];
+      }
+    }
+    if (activation == 'relu') {
+      for (int j = 0; j < out.length; j++) {
+        if (out[j] < 0) out[j] = 0;
+      }
+    } else if (activation == 'softmax') {
+      double maxV = out[0];
+      for (int j = 1; j < out.length; j++) {
+        if (out[j] > maxV) maxV = out[j];
+      }
+      double sum = 0;
+      for (int j = 0; j < out.length; j++) {
+        out[j] = math.exp(out[j] - maxV);
+        sum += out[j];
+      }
+      for (int j = 0; j < out.length; j++) {
+        out[j] = out[j] / sum;
+      }
+    } else {
+      throw FormatException('Unknown activation: $activation');
+    }
+    return out;
+  }
+}
+
+/// The trained sound-type network, run in plain Dart (no native library).
+/// Loaded from assets/models/sound_model.json, which is produced by
+/// ai_training/train_sound_model.py.
 ///
-/// Runs TWO models per reading:
-///   1. PRIMARY (reliable): quiet / normal_activity / disruptive — 72.6%
-///      test accuracy. This is what drives the "Live Sound Profile" bars
-///      and any threshold/alerting logic. Supports admin upload via
-///      RemoteModelLoader (see Settings > AI Model Management).
-///   2. SECONDARY (best guess): the original 11 fine-grained types
-///      (clapping, furniture_dragging, shouting, etc.) — only ~34% test
-///      accuracy, since 4 loudness-only sensor numbers can't reliably
-///      separate that many similar sounds. Shown as a low-confidence
-///      "best guess" label alongside the reliable tier, never as the
-///      primary signal. Bundled-only for now (not swappable via upload).
-///
-/// Input (both models): 4 numbers from the INMP441 sensor (Avg, Peak, Min, RMS)
-class MLInferenceService {
-  Interpreter? _interpreter;
-  List<String> _labels = [];
-  List<double> _scalerMean = [];
-  List<double> _scalerScale = [];
+/// It looks at a WINDOW of the last few readings of one zone and turns them
+/// into 9 numbers (how loud, how spiky, how variable). [features] must stay
+/// identical to window_features() in that Python script.
+class SoundWindowModel {
+  SoundWindowModel._({
+    required this.classes,
+    required this.window,
+    required this.minReadings,
+    required this.maxAgeSeconds,
+    required this.uncertainBelow,
+    required this.fallbackQuietRms,
+    required this.scalerMean,
+    required this.scalerScale,
+    required List<_DenseLayer> layers,
+  }) : _layers = layers;
 
-  Interpreter? _fineInterpreter;
-  List<String> _fineLabels = [];
-  List<double> _fineScalerMean = [];
-  List<double> _fineScalerScale = [];
+  static const int featureCount = 9;
 
-  static const String _modelType = 'sound_type';
+  final List<String> classes;
+  final int window;
+  final int minReadings;
+  final int maxAgeSeconds;
+  final double uncertainBelow;
+  final double fallbackQuietRms;
+  final List<double> scalerMean;
+  final List<double> scalerScale;
+  final List<_DenseLayer> _layers;
 
-  Future<void> initialize() async {
-    await _initializePrimary();
-    await _initializeFineGrained();
+  factory SoundWindowModel.fromJson(Map<String, dynamic> json) {
+    if (json['format'] != 'lumisense-mlp-v1') {
+      throw FormatException('Unsupported model format: ${json['format']}');
+    }
+
+    List<double> nums(dynamic v) =>
+        (v as List).map((e) => (e as num).toDouble()).toList();
+
+    final scaler = json['scaler'] as Map<String, dynamic>;
+    final layers = (json['layers'] as List).map((l) {
+      final m = l as Map<String, dynamic>;
+      return _DenseLayer(
+        weights: (m['w'] as List).map((row) => nums(row)).toList(),
+        bias: nums(m['b']),
+        activation: m['activation'] as String,
+      );
+    }).toList();
+
+    final model = SoundWindowModel._(
+      classes: (json['classes'] as List).map((e) => e as String).toList(),
+      window: (json['window'] as num).toInt(),
+      minReadings: (json['min_readings'] as num).toInt(),
+      maxAgeSeconds: (json['max_age_seconds'] as num).toInt(),
+      uncertainBelow: (json['uncertain_below'] as num).toDouble(),
+      fallbackQuietRms: (json['fallback_quiet_rms'] as num).toDouble(),
+      scalerMean: nums(scaler['mean']),
+      scalerScale: nums(scaler['scale']),
+      layers: layers,
+    );
+    model._validate();
+    return model;
   }
 
-  Future<void> _initializePrimary() async {
+  void _validate() {
+    if (scalerMean.length != featureCount || scalerScale.length != featureCount) {
+      throw FormatException('Scaler does not have $featureCount values');
+    }
+    int width = featureCount;
+    for (final layer in _layers) {
+      if (layer.weights.length != width) {
+        throw FormatException('Layer input size does not match');
+      }
+      width = layer.bias.length;
+      for (final row in layer.weights) {
+        if (row.length != width) {
+          throw FormatException('Layer weight rows have the wrong size');
+        }
+      }
+    }
+    if (width != classes.length) {
+      throw FormatException('Output size does not match class list');
+    }
+  }
+
+  static double _log1p(double x) => math.log(1.0 + x);
+
+  /// Turns a window of readings (oldest first) into the model's 9 inputs.
+  List<double> features(List<SensorReading> window) {
+    final n = window.length;
+    double sumRms = 0;
+    double maxRms = window.first.rms;
+    double minRms = window.first.rms;
+    double peakRatio = 0;
+    double avgRatio = 0;
+    int over100 = 0;
+    int over1000 = 0;
+
+    for (final r in window) {
+      sumRms += r.rms;
+      if (r.rms > maxRms) maxRms = r.rms;
+      if (r.rms < minRms) minRms = r.rms;
+      final safeRms = r.rms > 1.0 ? r.rms : 1.0;
+      peakRatio += r.peak / safeRms;
+      avgRatio += r.avg / safeRms;
+      if (r.rms > 100) over100++;
+      if (r.rms > 1000) over1000++;
+    }
+
+    final mean = sumRms / n;
+    double squares = 0;
+    for (final r in window) {
+      final d = r.rms - mean;
+      squares += d * d;
+    }
+    final std = math.sqrt(squares / n); // population std, like numpy
+
+    double diffSum = 0;
+    for (int i = 1; i < n; i++) {
+      diffSum += (window[i].rms - window[i - 1].rms).abs();
+    }
+    final meanDiff = n > 1 ? diffSum / (n - 1) : 0.0;
+
+    return [
+      _log1p(mean),
+      _log1p(maxRms),
+      _log1p(minRms),
+      _log1p(std),
+      peakRatio / n,
+      avgRatio / n,
+      over100 / n,
+      over1000 / n,
+      _log1p(meanDiff),
+    ];
+  }
+
+  /// Probabilities for [classes], in the same order.
+  List<double> predict(List<double> features) {
+    var x = List<double>.generate(
+      featureCount,
+      (i) => (features[i] - scalerMean[i]) / scalerScale[i],
+    );
+    for (final layer in _layers) {
+      x = layer.forward(x);
+    }
+    return x;
+  }
+}
+
+/// Classifies the SOUND TYPE heard by each zone (quiet / talking / clapping /
+/// shouting / table_dragging / phone), using the last few readings of that zone.
+///
+/// Replaces the old TFLite version: it needs no native library, so it also
+/// works on Windows without a DLL.
+///
+/// Output of [classifySound]:
+///   label           top class, or 'uncertain' when the top probability is low,
+///                   or 'unknown' when there are too few recent readings
+///   confidence      probability of the top class
+///   profile         every class with its probability, highest first
+///   windowMeanRms   average rms over the readings used (also used by the
+///                   source detection, which compares zones)
+///   readingsUsed    how many readings were in the window
+class MLInferenceService {
+  MLInferenceService();
+
+  /// For tests: skips loading and uses the given model.
+  MLInferenceService.withModel(SoundWindowModel model) : _model = model;
+
+  static const String _modelType = 'sound_type';
+  static const String _assetPath = 'assets/models/sound_model.json';
+  static const int _maxBuffered = 64;
+
+  SoundWindowModel? _model;
+  final Map<int, List<SensorReading>> _buffers = {};
+
+  bool get isReady => _model != null;
+  SoundWindowModel? get model => _model;
+
+  Future<void> initialize() async {
+    // 1) A model uploaded by an admin (Settings > AI Model Management)
     try {
-      final remote = await RemoteModelLoader.fetch(_modelType);
-      if (remote != null) {
-        _interpreter = Interpreter.fromFile(File(remote['tflite']!));
-        _labels = (await File(remote['labels']!).readAsString())
-            .split('\n')
-            .where((l) => l.isNotEmpty)
-            .toList();
-        final scale = _parseScaler(await File(remote['scaler']!).readAsString());
-        _scalerMean = scale.$1;
-        _scalerScale = scale.$2;
-        debugPrint('✓ ML model loaded from admin upload. Labels: $_labels');
+      final remotePath = await RemoteModelLoader.fetch(_modelType);
+      if (remotePath != null) {
+        final text = await File(remotePath).readAsString();
+        _model = SoundWindowModel.fromJson(jsonDecode(text) as Map<String, dynamic>);
+        debugPrint('✓ Sound model loaded from admin upload. Classes: ${_model!.classes}');
         return;
       }
     } catch (e) {
-      debugPrint('⚠ Remote ML model failed, falling back to bundled: $e');
+      debugPrint('⚠ Uploaded sound model unusable, falling back to bundled: $e');
     }
 
+    // 2) The model bundled inside the app
     try {
-      _interpreter = await Interpreter.fromAsset('assets/models/sound_classifier.tflite');
-      final labelData = await rootBundle.loadString('assets/models/class_labels.txt');
-      _labels = labelData.split('\n').where((l) => l.isNotEmpty).toList();
-      final scalerData = await rootBundle.loadString('assets/models/scaler_params.txt');
-      final scale = _parseScaler(scalerData);
-      _scalerMean = scale.$1;
-      _scalerScale = scale.$2;
-      debugPrint('✓ ML model loaded (bundled). Labels: $_labels');
+      final text = await rootBundle.loadString(_assetPath);
+      _model = SoundWindowModel.fromJson(jsonDecode(text) as Map<String, dynamic>);
+      debugPrint('✓ Sound model loaded (bundled). Classes: ${_model!.classes}');
     } catch (e) {
-      debugPrint('⚠ ML model not ready yet: $e');
+      debugPrint('⚠ Sound model not ready yet: $e');
     }
   }
 
-  Future<void> _initializeFineGrained() async {
-    try {
-      _fineInterpreter =
-          await Interpreter.fromAsset('assets/models/sound_classifier_finegrained.tflite');
-      final labelData =
-          await rootBundle.loadString('assets/models/class_labels_finegrained.txt');
-      _fineLabels = labelData.split('\n').where((l) => l.isNotEmpty).toList();
-      final scalerData =
-          await rootBundle.loadString('assets/models/scaler_params_finegrained.txt');
-      final scale = _parseScaler(scalerData);
-      _fineScalerMean = scale.$1;
-      _fineScalerScale = scale.$2;
-      debugPrint('✓ Fine-grained ML model loaded (bundled). Labels: $_fineLabels');
-    } catch (e) {
-      debugPrint('⚠ Fine-grained ML model not ready yet: $e');
-    }
-  }
-
-  (List<double>, List<double>) _parseScaler(String scalerData) {
-    List<double> mean = [];
-    List<double> scale = [];
-    for (final line in scalerData.split('\n')) {
-      if (line.startsWith('mean:')) {
-        mean = line.replaceFirst('mean:', '').split(',').map(double.parse).toList();
-      } else if (line.startsWith('scale:')) {
-        scale = line.replaceFirst('scale:', '').split(',').map(double.parse).toList();
-      }
-    }
-    return (mean, scale);
-  }
-
-  /// Takes the raw sensor data and returns the predicted sound class from
-  /// the PRIMARY (reliable) model, plus a full confidence profile across
-  /// its classes for the "Live Sound Profile" UI.
+  /// Call with the latest reading of a zone. The same reading may be passed
+  /// again and again (the realtime stream repeats it) — repeats are ignored.
   Map<String, dynamic> classifySound({
+    required int zoneId,
+    required int readingId,
+    required DateTime time,
     required double avg,
     required double peak,
     required double min,
     required double rms,
   }) {
-    if (_interpreter == null || _labels.isEmpty || _scalerMean.isEmpty) {
-      return {'label': 'unknown', 'confidence': 0.0, 'profile': []};
+    final model = _model;
+    if (model == null) {
+      return _result('unknown', 0.0, const [], rms, 0);
     }
 
-    try {
-      final normalized = [
-        (avg - _scalerMean[0]) / _scalerScale[0],
-        (peak - _scalerMean[1]) / _scalerScale[1],
-        (min - _scalerMean[2]) / _scalerScale[2],
-        (rms - _scalerMean[3]) / _scalerScale[3],
-      ];
-
-      var input = [normalized];
-      var output = List.filled(1 * _labels.length, 0.0).reshape([1, _labels.length]);
-      _interpreter!.run(input, output);
-
-      List<double> probabilities = (output[0] as List).cast<double>();
-      int maxIndex = 0;
-      double maxProb = probabilities[0];
-      for (int i = 1; i < probabilities.length; i++) {
-        if (probabilities[i] > maxProb) {
-          maxProb = probabilities[i];
-          maxIndex = i;
-        }
-      }
-
-      List<Map<String, dynamic>> fullProfile = [];
-      for (int i = 0; i < probabilities.length; i++) {
-        fullProfile.add({'label': _labels[i], 'confidence': probabilities[i]});
-      }
-      fullProfile.sort((a, b) => (b['confidence'] as double).compareTo(a['confidence'] as double));
-
-      return {
-        'label': _labels[maxIndex],
-        'confidence': maxProb,
-        'profile': fullProfile,
-      };
-    } catch (e) {
-      return {'label': 'error', 'confidence': 0.0, 'profile': []};
+    final buffer = _buffers.putIfAbsent(zoneId, () => <SensorReading>[]);
+    final isNew = buffer.isEmpty ||
+        (readingId != buffer.last.id && !time.isBefore(buffer.last.time));
+    if (isNew) {
+      buffer.add(SensorReading(
+        id: readingId,
+        time: time,
+        avg: avg,
+        peak: peak,
+        min: min,
+        rms: rms,
+      ));
+      if (buffer.length > _maxBuffered) buffer.removeAt(0);
     }
+
+    final window = _recentWindow(buffer, model);
+    double sum = 0;
+    for (final r in window) {
+      sum += r.rms;
+    }
+    final meanRms = sum / window.length;
+
+    // Too few recent readings to judge the sound type.
+    if (window.length < model.minReadings) {
+      if (rms < model.fallbackQuietRms) {
+        // The ESP32 only sends slowly when the room is quiet, so a single
+        // very low reading means quiet (simple rule, not the network).
+        return _result(
+          'quiet',
+          1.0,
+          const [
+            {'label': 'quiet', 'confidence': 1.0},
+          ],
+          meanRms,
+          window.length,
+        );
+      }
+      return _result('unknown', 0.0, const [], meanRms, window.length);
+    }
+
+    final probs = model.predict(model.features(window));
+    final profile = <Map<String, dynamic>>[
+      for (int i = 0; i < probs.length; i++)
+        {'label': model.classes[i], 'confidence': probs[i]},
+    ];
+    profile.sort((a, b) =>
+        (b['confidence'] as double).compareTo(a['confidence'] as double));
+
+    final top = profile.first;
+    final confidence = top['confidence'] as double;
+    final label =
+        confidence >= model.uncertainBelow ? top['label'] as String : 'uncertain';
+
+    return _result(label, confidence, profile, meanRms, window.length);
   }
 
-  /// Secondary "best guess" — the fine-grained 11-type prediction (e.g.
-  /// "clapping", "furniture_dragging"). Only ~34% test accuracy, so this
-  /// should always be displayed as a low-confidence hint, never as fact.
-  /// Returns only the top label + confidence (no full profile needed).
-  Map<String, dynamic> classifySoundFineGrained({
-    required double avg,
-    required double peak,
-    required double min,
-    required double rms,
-  }) {
-    if (_fineInterpreter == null || _fineLabels.isEmpty || _fineScalerMean.isEmpty) {
-      return {'label': null, 'confidence': 0.0};
+  /// The newest readings (at most [SoundWindowModel.window]) that are not
+  /// older than maxAgeSeconds compared to the latest one.
+  List<SensorReading> _recentWindow(
+    List<SensorReading> buffer,
+    SoundWindowModel model,
+  ) {
+    final latest = buffer.last.time;
+    final cutoff = latest.subtract(Duration(seconds: model.maxAgeSeconds));
+    final recent = buffer.where((r) => !r.time.isBefore(cutoff)).toList();
+    if (recent.length > model.window) {
+      return recent.sublist(recent.length - model.window);
     }
-
-    try {
-      final normalized = [
-        (avg - _fineScalerMean[0]) / _fineScalerScale[0],
-        (peak - _fineScalerMean[1]) / _fineScalerScale[1],
-        (min - _fineScalerMean[2]) / _fineScalerScale[2],
-        (rms - _fineScalerMean[3]) / _fineScalerScale[3],
-      ];
-
-      var input = [normalized];
-      var output =
-          List.filled(1 * _fineLabels.length, 0.0).reshape([1, _fineLabels.length]);
-      _fineInterpreter!.run(input, output);
-
-      List<double> probabilities = (output[0] as List).cast<double>();
-      int maxIndex = 0;
-      double maxProb = probabilities[0];
-      for (int i = 1; i < probabilities.length; i++) {
-        if (probabilities[i] > maxProb) {
-          maxProb = probabilities[i];
-          maxIndex = i;
-        }
-      }
-
-      return {'label': _fineLabels[maxIndex], 'confidence': maxProb};
-    } catch (e) {
-      return {'label': null, 'confidence': 0.0};
-    }
+    return recent;
   }
 
-  void dispose() {
-    _interpreter?.close();
-    _fineInterpreter?.close();
+  Map<String, dynamic> _result(
+    String label,
+    double confidence,
+    List<Map<String, dynamic>> profile,
+    double meanRms,
+    int readingsUsed,
+  ) {
+    return {
+      'label': label,
+      'confidence': confidence,
+      'profile': profile,
+      'windowMeanRms': meanRms,
+      'readingsUsed': readingsUsed,
+    };
   }
+
+  void dispose() {}
 }
