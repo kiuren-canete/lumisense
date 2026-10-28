@@ -1,120 +1,60 @@
-import 'dart:io';
-import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
-import 'remote_model_loader.dart';
-
-/// Runs the fused 3-sensor "where is this noise actually coming from"
-/// model, trained on real simultaneous readings from all 3 zone sensors
-/// (see ai_training/train_source_classifier.py).
+/// Finds WHERE a noise is coming from by comparing the 3 zone sensors.
 ///
-/// Input:  12 numbers — the CURRENT reading from all 3 zones at once:
-///   [cs_avg, cs_peak, cs_min, cs_rms,
-///    eng_avg, eng_peak, eng_min, eng_rms,
-///    it_avg, it_peak, it_min, it_rms]
+/// Sound leaks through the room dividers, so every sensor hears something.
+/// The sensor that hears it LOUDEST is the one closest to the source.
+/// On the client's test recordings this simple rule named the right zone
+/// about 87% of the time while a noise was happening (100% / 96% / 64% on
+/// the three test stages). Trying to learn per-sensor quiet levels did not
+/// help, so there is deliberately nothing to tune here.
+///
+/// Inputs, per zone id (1 = HIGHSCHOOL, 2 = STEM/HUMSS, 3 = GAS/TVL):
+///   windowRms     average rms of that zone's last few readings
+///                 (see MLInferenceService, key 'windowMeanRms')
+///   soundLabels   that zone's sound type from MLInferenceService
+///
 /// Output: { noiseDetected, likelySource, confidence }
-///
-/// Unlike [MLInferenceService] (which classifies each zone's sound type in
-/// isolation), this model needs a snapshot of all 3 zones at the same
-/// moment — sound leaks between rooms, so comparing sensors against each
-/// other is what actually identifies the true source.
+///   noiseDetected  false when the loudest zone itself sounds 'quiet'
+///   likelySource   the model-era label of the loudest zone. The labels keep
+///                  the ORIGINAL department names because the database and
+///                  ZoneNames.forModelLabel() translate them for display
+///                  (IT = zone 1, CS = zone 2, Engineering = zone 3).
+///   confidence     loudest / (loudest + second loudest): 0.5 = a tie,
+///                  close to 1.0 = clearly one zone.
 class SourceInferenceService {
-  Interpreter? _interpreter;
-  List<String> _labels = [];
-  List<double> _scalerMean = [];
-  List<double> _scalerScale = [];
+  static const Map<int, String> _labelOfZone = {
+    1: 'IT Department',
+    2: 'CS Department',
+    3: 'Engineering Department',
+  };
 
-  static const String _modelType = 'noise_source';
+  /// Nothing to load any more — kept so callers can still `await initialize()`.
+  Future<void> initialize() async {}
 
-  Future<void> initialize() async {
-    try {
-      final remote = await RemoteModelLoader.fetch(_modelType);
-      if (remote != null) {
-        _interpreter = Interpreter.fromFile(File(remote['tflite']!));
-        _labels = (await File(remote['labels']!).readAsString())
-            .split('\n')
-            .where((l) => l.isNotEmpty)
-            .toList();
-        _loadScaler(await File(remote['scaler']!).readAsString());
-        debugPrint('✓ Source model loaded from admin upload. Labels: $_labels');
-        return;
-      }
-    } catch (e) {
-      debugPrint('⚠ Remote source model failed, falling back to bundled: $e');
-    }
-
-    try {
-      _interpreter = await Interpreter.fromAsset('assets/models/source_classifier.tflite');
-      _labels = (await rootBundle.loadString('assets/models/source_class_labels.txt'))
-          .split('\n')
-          .where((l) => l.isNotEmpty)
-          .toList();
-      _loadScaler(await rootBundle.loadString('assets/models/source_scaler_params.txt'));
-      debugPrint('✓ Source model loaded (bundled). Labels: $_labels');
-    } catch (e) {
-      debugPrint('⚠ Source model not ready yet: $e');
-    }
-  }
-
-  void _loadScaler(String scalerData) {
-    for (final line in scalerData.split('\n')) {
-      if (line.startsWith('mean:')) {
-        _scalerMean = line.replaceFirst('mean:', '').split(',').map(double.parse).toList();
-      } else if (line.startsWith('scale:')) {
-        _scalerScale = line.replaceFirst('scale:', '').split(',').map(double.parse).toList();
-      }
-    }
-  }
-
-  /// [cs], [eng], [it] must each contain the keys 'avg', 'peak', 'min',
-  /// 'rms' — the latest reading from that zone's sensor, all captured at
-  /// (approximately) the same moment.
   Map<String, dynamic> classifySource({
-    required Map<String, double> cs,
-    required Map<String, double> eng,
-    required Map<String, double> it,
+    required Map<int, double> windowRms,
+    required Map<int, String> soundLabels,
   }) {
-    if (_interpreter == null || _labels.isEmpty || _scalerMean.isEmpty) {
+    final zones =
+        windowRms.keys.where((z) => _labelOfZone.containsKey(z)).toList();
+    if (zones.length < 2) {
       return {'noiseDetected': false, 'likelySource': null, 'confidence': 0.0};
     }
 
-    try {
-      final raw = [
-        cs['avg']!, cs['peak']!, cs['min']!, cs['rms']!,
-        eng['avg']!, eng['peak']!, eng['min']!, eng['rms']!,
-        it['avg']!, it['peak']!, it['min']!, it['rms']!,
-      ];
-      final normalized = List.generate(
-        raw.length,
-        (i) => (raw[i] - _scalerMean[i]) / _scalerScale[i],
-      );
+    zones.sort((a, b) => windowRms[b]!.compareTo(windowRms[a]!));
+    final loudest = zones[0];
+    final topRms = windowRms[loudest]!;
+    final secondRms = windowRms[zones[1]]!;
 
-      var input = [normalized];
-      var output = List.filled(1 * _labels.length, 0.0).reshape([1, _labels.length]);
-      _interpreter!.run(input, output);
+    final bool noiseDetected = (soundLabels[loudest] ?? 'unknown') != 'quiet';
+    final double total = topRms + secondRms;
+    final double confidence = total > 0 ? topRms / total : 0.0;
 
-      final probs = (output[0] as List).cast<double>();
-      int maxIndex = 0;
-      double maxProb = probs[0];
-      for (int i = 1; i < probs.length; i++) {
-        if (probs[i] > maxProb) {
-          maxProb = probs[i];
-          maxIndex = i;
-        }
-      }
-
-      final predicted = _labels[maxIndex];
-      final isNoise = predicted != 'none';
-
-      return {
-        'noiseDetected': isNoise,
-        'likelySource': isNoise ? predicted : null,
-        'confidence': maxProb,
-      };
-    } catch (e) {
-      return {'noiseDetected': false, 'likelySource': null, 'confidence': 0.0};
-    }
+    return {
+      'noiseDetected': noiseDetected,
+      'likelySource': noiseDetected ? _labelOfZone[loudest] : null,
+      'confidence': confidence,
+    };
   }
 
-  void dispose() => _interpreter?.close();
+  void dispose() {}
 }
