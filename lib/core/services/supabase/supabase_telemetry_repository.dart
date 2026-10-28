@@ -27,6 +27,12 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
   // so we don't spam the audit_logs on every stream event.
   final Set<int> _inactiveLogged = {};
 
+  // The source prediction used to be written on EVERY stream update (thousands
+  // of rows a day). Now: only when the answer changes, or every 30 seconds.
+  static const Duration _sourceWriteEvery = Duration(seconds: 30);
+  DateTime? _lastSourceWrite;
+  String? _lastSourceKey;
+
   Future<void> initialize() async {
     await _mlService.initialize();
     await _sourceMlService.initialize();
@@ -47,11 +53,12 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
         }
 
         final List<ZoneSnapshot> snapshots = [];
-        // Collected alongside snapshots so we can run the fused 3-sensor
-        // SOURCE model once per cycle, using the exact feature order it
-        // was trained on (see ai_training/train_source_classifier.py).
-        // zoneId 1=IT, 2=CS, 3=Engineering (see _getZoneName below).
-        final Map<String, Map<String, double>> zoneReadingsByCode = {};
+        // Collected alongside snapshots so we can run the 3-sensor SOURCE
+        // detection once per cycle (which zone hears the noise loudest).
+        // Keys are zone ids: 1=HIGHSCHOOL (old IT), 2=STEM/HUMSS (old CS),
+        // 3=GAS/TVL (old Engineering).
+        final Map<int, double> zoneWindowRms = {};
+        final Map<int, String> zoneSoundLabels = {};
 
         for (final row in latestPerZone.values) {
           final zoneId = row['zone_id'] as int;
@@ -92,15 +99,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
           // Zone came back online — clear the logged flag
           _inactiveLogged.remove(zoneId);
 
-          // Record this zone's raw reading for the fused SOURCE model —
-          // needs all 3 zones' current values at once (see below).
-          final String? zoneCode = _zoneCode(zoneId);
-          if (zoneCode != null) {
-            zoneReadingsByCode[zoneCode] = {
-              'avg': avg, 'peak': peak, 'min': min, 'rms': rms,
-            };
-          }
-
           // ── dB CONVERSION ───────────────────────────────────
           final double rawNoiseDb = rms > 0 ? 20 * _log10(rms / 1.0) : 0;
 
@@ -113,12 +111,20 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
 
           // ANN classification
           final result = _mlService.classifySound(
+            zoneId: zoneId,
+            readingId: row['id'] as int,
+            time: updatedAt,
             avg: avg,
             peak: peak,
             min: min,
             rms: rms,
           );
           final String soundClass = result['label'] as String;
+
+          // Remember this zone's window loudness + sound type for the
+          // SOURCE detection below (needs all 3 zones at once).
+          zoneWindowRms[zoneId] = (result['windowMeanRms'] as num).toDouble();
+          zoneSoundLabels[zoneId] = soundClass;
           final List<Map<String, dynamic>> soundProfile =
               (result['profile'] as List?)
                   ?.map((e) => (e as Map).cast<String, dynamic>())
@@ -169,18 +175,29 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
         // Only meaningful once we have a fresh, simultaneous reading
         // from all 3 zones this cycle — a partial set (e.g. one zone
         // inactive) can't be compared fairly against the others.
-        if (zoneReadingsByCode.length == 3) {
+        if (zoneWindowRms.length == 3) {
           final sourceResult = _sourceMlService.classifySource(
-            cs: zoneReadingsByCode['cs']!,
-            eng: zoneReadingsByCode['eng']!,
-            it: zoneReadingsByCode['it']!,
+            windowRms: zoneWindowRms,
+            soundLabels: zoneSoundLabels,
           );
-          _recordSourcePrediction(
-            sourceResult: sourceResult,
-            csRms: zoneReadingsByCode['cs']!['rms']!,
-            engRms: zoneReadingsByCode['eng']!['rms']!,
-            itRms: zoneReadingsByCode['it']!['rms']!,
-          );
+
+          final sourceKey =
+              '${sourceResult['noiseDetected']}|${sourceResult['likelySource']}';
+          final now = DateTime.now();
+          if (sourceKey != _lastSourceKey ||
+              _lastSourceWrite == null ||
+              now.difference(_lastSourceWrite!) >= _sourceWriteEvery) {
+            _lastSourceKey = sourceKey;
+            _lastSourceWrite = now;
+            // Column names (cs_rms / eng_rms / it_rms) are kept from the
+            // old schema: cs = zone 2, eng = zone 3, it = zone 1.
+            _recordSourcePrediction(
+              sourceResult: sourceResult,
+              csRms: zoneWindowRms[2]!,
+              engRms: zoneWindowRms[3]!,
+              itRms: zoneWindowRms[1]!,
+            );
+          }
         }
 
         return snapshots;
@@ -397,18 +414,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
   String _getZoneName(int zoneId) => ZoneNames.forZoneId(zoneId);
 
   String _getDepartmentShort(int zoneId) => ZoneNames.forZoneId(zoneId);
-
-  /// Maps zoneId -> the short code the SOURCE model's feature order was
-  /// trained on (cs_*, eng_*, it_* — see ai_training/train_source_classifier.py).
-  /// zoneId 1=IT, 2=CS, 3=Engineering (matches _getZoneName above).
-  String? _zoneCode(int zoneId) {
-    switch (zoneId) {
-      case 1: return 'it';
-      case 2: return 'cs';
-      case 3: return 'eng';
-      default: return null;
-    }
-  }
 
   /// Persists the fused SOURCE model's latest prediction. Best-effort —
   /// a failure here should never interrupt the live-zones stream.
