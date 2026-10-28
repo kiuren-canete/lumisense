@@ -44,7 +44,7 @@ class SourceInferenceService {
     }
 
     try {
-      _interpreter = await Interpreter.fromAsset('models/source_classifier.tflite');
+      _interpreter = await Interpreter.fromAsset('assets/models/source_classifier.tflite');
       _labels = (await rootBundle.loadString('assets/models/source_class_labels.txt'))
           .split('\n')
           .where((l) => l.isNotEmpty)
