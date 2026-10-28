@@ -7,11 +7,13 @@ import '../../../../core/theme/app_colors.dart';
 
 /// Settings > AI Model Management.
 ///
-/// Lets an admin upload a replacement .tflite model (plus its matching
-/// labels + scaler files) for either the sound-type classifier or the
-/// noise-source classifier. The upload goes to Supabase Storage; every
-/// device picks up the new model automatically on next app start — no
-/// rebuild needed. See lib/core/services/remote_model_loader.dart.
+/// Lets an admin upload a replacement sound-type model: ONE .json file made
+/// by ai_training/train_sound_model.py (labels and scaler are inside it).
+/// The upload goes to Supabase Storage; every device picks up the new model
+/// automatically on next app start — no rebuild needed. A file that is not a
+/// valid model is ignored and the bundled model keeps running.
+/// See lib/core/services/remote_model_loader.dart.
+/// (Which-zone detection is a fixed rule now, so it has nothing to upload.)
 ///
 /// NOTE: gated on the same UserRole placeholder used elsewhere in the app
 /// (see statistics_report_page.dart). That enum isn't yet wired to a real
@@ -27,7 +29,6 @@ class AiModelManagementSection extends StatefulWidget {
 
 class _AiModelManagementSectionState extends State<AiModelManagementSection> {
   String? _soundTypeVersion;
-  String? _sourceVersion;
   bool _loadingVersions = true;
 
   @override
@@ -39,11 +40,9 @@ class _AiModelManagementSectionState extends State<AiModelManagementSection> {
   Future<void> _refreshVersions() async {
     setState(() => _loadingVersions = true);
     final soundType = await RemoteModelLoader.currentVersion('sound_type');
-    final source = await RemoteModelLoader.currentVersion('noise_source');
     if (!mounted) return;
     setState(() {
       _soundTypeVersion = soundType;
-      _sourceVersion = source;
       _loadingVersions = false;
     });
   }
@@ -75,18 +74,10 @@ class _AiModelManagementSectionState extends State<AiModelManagementSection> {
           const SizedBox(height: 20),
           _ModelUploadRow(
             title: 'Sound Type Classifier',
-            subtitle: 'Per-zone: quiet / normal activity / disruptive',
+            subtitle: 'Per-zone: quiet / talking / clapping / shouting / table dragging / phone',
             currentVersion: _soundTypeVersion,
             loading: _loadingVersions,
             onUpload: () => _pickAndUpload('sound_type'),
-          ),
-          const SizedBox(height: 16),
-          _ModelUploadRow(
-            title: 'Noise Source Classifier',
-            subtitle: 'Fused 3-sensor: which zone the noise is from',
-            currentVersion: _sourceVersion,
-            loading: _loadingVersions,
-            onUpload: () => _pickAndUpload('noise_source'),
           ),
         ],
       ),
@@ -96,26 +87,12 @@ class _AiModelManagementSectionState extends State<AiModelManagementSection> {
   Future<void> _pickAndUpload(String modelType) async {
     final messenger = ScaffoldMessenger.of(context);
 
-    final tfliteResult = await FilePicker.pickFiles(
-      dialogTitle: 'Select the .tflite model file',
+    final modelResult = await FilePicker.pickFiles(
+      dialogTitle: 'Select the model .json file (sound_model.json)',
       type: FileType.custom,
-      allowedExtensions: ['tflite'],
+      allowedExtensions: ['json'],
     );
-    if (tfliteResult == null || tfliteResult.files.single.path == null) return;
-
-    final labelsResult = await FilePicker.pickFiles(
-      dialogTitle: 'Select the labels .txt file',
-      type: FileType.custom,
-      allowedExtensions: ['txt'],
-    );
-    if (labelsResult == null || labelsResult.files.single.path == null) return;
-
-    final scalerResult = await FilePicker.pickFiles(
-      dialogTitle: 'Select the scaler params .txt file',
-      type: FileType.custom,
-      allowedExtensions: ['txt'],
-    );
-    if (scalerResult == null || scalerResult.files.single.path == null) return;
+    if (modelResult == null || modelResult.files.single.path == null) return;
 
     messenger.showSnackBar(
       const SnackBar(content: Text('Uploading model…')),
@@ -123,9 +100,7 @@ class _AiModelManagementSectionState extends State<AiModelManagementSection> {
 
     final success = await RemoteModelLoader.upload(
       modelType: modelType,
-      tfliteFile: File(tfliteResult.files.single.path!),
-      labelsFile: File(labelsResult.files.single.path!),
-      scalerFile: File(scalerResult.files.single.path!),
+      modelFile: File(modelResult.files.single.path!),
     );
 
     if (!mounted) return;
