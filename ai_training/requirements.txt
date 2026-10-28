@@ -1,7 +1,6 @@
-# Lumisense AI Training Environment (Lightweight ANN)
-# Run: pip install -r requirements.txt
+# Lumisense AI Training Environment (sound-type model, pure-Dart edition)
+# Run: pip install -r ai_training/requirements.txt
+# No TensorFlow needed any more — the model is exported as JSON.
 
-tensorflow>=2.15.0
 numpy>=1.24.0
 scikit-learn>=1.3.0
-pandas>=2.0.0
