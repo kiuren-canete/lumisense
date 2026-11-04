@@ -33,16 +33,55 @@ extension _RangeExt on _Range {
       case _Range.oneDay:     return const Duration(hours: 10); // 7AM–5PM span
     }
   }
+
+  /// Width of one chart point in minutes (readings inside it are averaged).
+  /// 1 Hour -> 5-minute points, 3 Hours -> 15-minute points, 1 Day -> hourly.
+  int get bucketMinutes {
+    switch (this) {
+      case _Range.oneHour:    return 5;
+      case _Range.threeHours: return 15;
+      case _Range.oneDay:     return 60;
+    }
+  }
+
+  /// Distance between the time labels under the chart, in minutes.
+  int get labelStepMinutes {
+    switch (this) {
+      case _Range.oneHour:    return 10;
+      case _Range.threeHours: return 30;
+      case _Range.oneDay:     return 60;
+    }
+  }
+}
+
+/// "7AM", "11:10AM", "12:30PM". [minute] = minutes since midnight.
+String _clockLabel(int minute) {
+  final h24 = minute ~/ 60;
+  final m = minute % 60;
+  final suffix = h24 >= 12 ? 'PM' : 'AM';
+  final h12 = h24 % 12 == 0 ? 12 : h24 % 12;
+  return m == 0
+      ? '$h12$suffix'
+      : '$h12:${m.toString().padLeft(2, '0')}$suffix';
+}
+
+/// "7:00 AM", "11:10 AM" (for the chart tooltip).
+String _clockFull(int minute) {
+  final h24 = minute ~/ 60;
+  final m = minute % 60;
+  final suffix = h24 >= 12 ? 'PM' : 'AM';
+  final h12 = h24 % 12 == 0 ? 12 : h24 % 12;
+  return '$h12:${m.toString().padLeft(2, '0')} $suffix';
 }
 
 // ─────────────────────────────────────────────────────────────
 //  DATA MODEL  (one averaged point per hour slot)
 // ─────────────────────────────────────────────────────────────
 class _HourlyPoint {
-  final int hour;       // 7..17
+  final int minute;     // start of the point, minutes since midnight
   final double noiseDb;
   final double tempC;
-  _HourlyPoint(this.hour, this.noiseDb, this.tempC);
+  _HourlyPoint(this.minute, this.noiseDb, this.tempC);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -70,6 +109,9 @@ class _DepartmentPageState extends State<DepartmentPage> {
 
   // ── live chart data ──────────────────────────────────────
   List<_HourlyPoint> _chartPoints = [];
+  // x-axis of the chart, in minutes since midnight (follows the selected range)
+  double _axisMin = _kSchoolStartHour * 60.0;
+  double _axisMax = _kSchoolEndHour * 60.0;
   bool _loading = true;
   String? _error;
 
@@ -158,20 +200,34 @@ class _DepartmentPageState extends State<DepartmentPage> {
         final ts   = DateTime.parse(row['created_at'] as String).toLocal();
         final hour = ts.hour;
         if (hour < _kSchoolStartHour || hour >= _kSchoolEndHour) continue;
+        final step = _selectedRange.bucketMinutes;
+        final bucket = ((hour * 60 + ts.minute) ~/ step) * step;
         final double rms  = (row['rms']           as num?)?.toDouble() ?? 0;
         final double temp = (row['temperature_c'] as num?)?.toDouble() ?? 0;
-        rmsByHour .putIfAbsent(hour, () => []).add(rms);
-        tempByHour.putIfAbsent(hour, () => []).add(temp);
+        rmsByHour .putIfAbsent(bucket, () => []).add(rms);
+        tempByHour.putIfAbsent(bucket, () => []).add(temp);
       }
 
       // Convert to _HourlyPoint list — only hours that have data
-      final points = rmsByHour.keys.map((hour) {
-        final avgRms  = rmsByHour[hour]!.reduce((a, b) => a + b) / rmsByHour[hour]!.length;
-        final avgTemp = tempByHour[hour]!.reduce((a, b) => a + b) / tempByHour[hour]!.length;
+      final points = rmsByHour.keys.map((bucket) {
+        final avgRms  = rmsByHour[bucket]!.reduce((a, b) => a + b) / rmsByHour[bucket]!.length;
+        final avgTemp = tempByHour[bucket]!.reduce((a, b) => a + b) / tempByHour[bucket]!.length;
         final db      = avgRms > 0 ? 20 * (math.log(avgRms) / math.log(10)) : 0.0;
-        return _HourlyPoint(hour, db, avgTemp);
+        return _HourlyPoint(bucket, db, avgTemp);
       }).toList()
-        ..sort((a, b) => a.hour.compareTo(b.hour));
+        ..sort((a, b) => a.minute.compareTo(b.minute));
+
+      // x-axis = the selected window, lined up with the label spacing
+      final labelStep = _selectedRange.labelStepMinutes;
+      final fromMin = fetchFrom.hour * 60 + fetchFrom.minute;
+      final toMin   = fetchTo.hour * 60 + fetchTo.minute;
+      var axisMin = (fromMin ~/ labelStep) * labelStep;
+      var axisMax = ((toMin + labelStep - 1) ~/ labelStep) * labelStep;
+      if (_selectedRange == _Range.oneDay) {
+        axisMin = _kSchoolStartHour * 60;
+        axisMax = _kSchoolEndHour * 60;
+      }
+      if (axisMax <= axisMin) axisMax = axisMin + labelStep;
 
       // ── AM / PM counts (noise_events for today) ──────────
       final today0 = DateTime(now.year, now.month, now.day);
@@ -205,6 +261,8 @@ class _DepartmentPageState extends State<DepartmentPage> {
       if (mounted) {
         setState(() {
           _chartPoints  = points;
+          _axisMin      = axisMin.toDouble();
+          _axisMax      = axisMax.toDouble();
           _latestDb     = latestDb;
           _latestTemp   = latestTemp;
           _latestType   = rows.isNotEmpty ? 'Ambient' : '—';
@@ -468,14 +526,14 @@ class _DepartmentPageState extends State<DepartmentPage> {
       );
     }
 
-    // Build FlSpot list — x = hour offset from 7AM (0..10), y = dB
+    // Build FlSpot list — x = minutes since midnight, y = dB
     final spots = _chartPoints
-        .map((p) => FlSpot((p.hour - _kSchoolStartHour).toDouble(), p.noiseDb))
+        .map((p) => FlSpot(p.minute.toDouble(), p.noiseDb))
         .toList();
 
-    // X-axis spans from 7 AM (0) to 5 PM (10)
-    const double minX = 0;
-    const double maxX = 10;
+    // X-axis = the selected window (1 Hour / 3 Hours / 7 AM–5 PM)
+    final double minX = _axisMin;
+    final double maxX = _axisMax;
 
     return LineChart(
       LineChartData(
@@ -494,18 +552,10 @@ class _DepartmentPageState extends State<DepartmentPage> {
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 32,
-              interval: 1,
+              interval: _selectedRange.labelStepMinutes.toDouble(),
               getTitlesWidget: (value, meta) {
-                final hour = _kSchoolStartHour + value.toInt();
-                if (hour > _kSchoolEndHour) return const SizedBox();
-                // Only label hours that actually have a data point
-                final hasPoint = _chartPoints.any((p) => p.hour == hour);
-                if (!hasPoint && value != minX && value != maxX) {
-                  return const SizedBox();
-                }
-                final label = hour >= 12
-                    ? '${hour == 12 ? 12 : hour - 12}PM'
-                    : '${hour}AM';
+                if (value > maxX) return const SizedBox();
+                final label = _clockLabel(value.round());
                 return Padding(
                   padding: const EdgeInsets.only(top: 10),
                   child: Text(
@@ -574,10 +624,7 @@ class _DepartmentPageState extends State<DepartmentPage> {
           touchTooltipData: LineTouchTooltipData(
             getTooltipColor: (_) => AppColors.surfaceHighlight,
             getTooltipItems: (touchedSpots) => touchedSpots.map((s) {
-              final hour = _kSchoolStartHour + s.x.toInt();
-              final label = hour >= 12
-                  ? '${hour == 12 ? 12 : hour - 12}:00 PM'
-                  : '$hour:00 AM';
+              final label = _clockFull(s.x.round());
               return LineTooltipItem(
                 '$label\n${s.y.toStringAsFixed(1)} dB',
                 const TextStyle(
