@@ -37,13 +37,58 @@ extension _StatRangeX on _StatRange {
         return const Duration(hours: 10);
     }
   }
+
+  /// Width of one chart point in minutes (readings inside it are averaged).
+  /// 1H -> 5-minute points, 3H -> 15-minute points, 1D -> hourly.
+  int get bucketMinutes {
+    switch (this) {
+      case _StatRange.oneHour:
+        return 5;
+      case _StatRange.threeHours:
+        return 15;
+      case _StatRange.oneDay:
+        return 60;
+    }
+  }
+
+  /// Distance between the time labels under the chart, in minutes.
+  int get labelStepMinutes {
+    switch (this) {
+      case _StatRange.oneHour:
+        return 10;
+      case _StatRange.threeHours:
+        return 30;
+      case _StatRange.oneDay:
+        return 60;
+    }
+  }
+}
+
+/// "7AM", "11:10AM", "12:30PM". [minute] = minutes since midnight.
+String _clockLabel(int minute) {
+  final h24 = minute ~/ 60;
+  final m = minute % 60;
+  final suffix = h24 >= 12 ? 'PM' : 'AM';
+  final h12 = h24 % 12 == 0 ? 12 : h24 % 12;
+  return m == 0
+      ? '$h12$suffix'
+      : '$h12:${m.toString().padLeft(2, '0')}$suffix';
+}
+
+/// "7:00 AM", "11:10 AM" (for the chart tooltip).
+String _clockFull(int minute) {
+  final h24 = minute ~/ 60;
+  final m = minute % 60;
+  final suffix = h24 >= 12 ? 'PM' : 'AM';
+  final h12 = h24 % 12 == 0 ? 12 : h24 % 12;
+  return '$h12:${m.toString().padLeft(2, '0')} $suffix';
 }
 
 class _HourlyPoint {
-  final int hour;
+  final int minute; // start of the point, minutes since midnight
   final double noiseDb;
   final double tempC;
-  _HourlyPoint(this.hour, this.noiseDb, this.tempC);
+  _HourlyPoint(this.minute, this.noiseDb, this.tempC);
 }
 
 class _DeptLineStyle {
@@ -76,6 +121,9 @@ class _StatisticsPageState extends State<StatisticsPage> {
   bool _loadingA = true;
   String? _errorA;
   List<List<_HourlyPoint>> _hourlyByDept = [[], [], []];
+  // x-axis of the charts, in minutes since midnight (follows the selected range)
+  double _axisMin = _kSchoolStartHour * 60.0;
+  double _axisMax = _kSchoolEndHour * 60.0;
 
   bool _loadingB = true;
   String? _errorB;
@@ -145,20 +193,48 @@ class _StatisticsPageState extends State<StatisticsPage> {
       if (hour < _kSchoolStartHour || hour >= _kSchoolEndHour) {
         continue;
       }
+      final step = _range.bucketMinutes;
+      final bucket = ((hour * 60 + ts.minute) ~/ step) * step;
       final rms = (row['rms'] as num?)?.toDouble() ?? 0;
       final temp = (row['temperature_c'] as num?)?.toDouble() ?? 0;
-      rmsByHour.putIfAbsent(hour, () => []).add(rms);
-      tempByHour.putIfAbsent(hour, () => []).add(temp);
+      rmsByHour.putIfAbsent(bucket, () => []).add(rms);
+      tempByHour.putIfAbsent(bucket, () => []).add(temp);
     }
 
-    return rmsByHour.keys.map((hour) {
-      final avgRms = rmsByHour[hour]!.reduce((a, b) => a + b) / rmsByHour[hour]!.length;
+    return rmsByHour.keys.map((bucket) {
+      final avgRms =
+          rmsByHour[bucket]!.reduce((a, b) => a + b) / rmsByHour[bucket]!.length;
       final avgTemp =
-          tempByHour[hour]!.reduce((a, b) => a + b) / tempByHour[hour]!.length;
+          tempByHour[bucket]!.reduce((a, b) => a + b) / tempByHour[bucket]!.length;
       final db = avgRms > 0 ? 20 * (math.log(avgRms) / math.log(10)) : 0.0;
-      return _HourlyPoint(hour, db, avgTemp);
+      return _HourlyPoint(bucket, db, avgTemp);
     }).toList()
-      ..sort((a, b) => a.hour.compareTo(b.hour));
+      ..sort((a, b) => a.minute.compareTo(b.minute));
+  }
+
+  /// [min, max] of the chart x-axis in minutes since midnight: the selected
+  /// window (1H / 3H) lined up with the label spacing, or 7 AM–5 PM for 1D.
+  List<double> _axisBounds() {
+    if (_range == _StatRange.oneDay) {
+      return [_kSchoolStartHour * 60.0, _kSchoolEndHour * 60.0];
+    }
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final schoolStart = today.add(const Duration(hours: _kSchoolStartHour));
+    final schoolEnd = today.add(const Duration(hours: _kSchoolEndHour));
+    final rangeStart = now.subtract(_range.lookback);
+    final from = rangeStart.isBefore(schoolStart) ? schoolStart : rangeStart;
+    final to = now.isAfter(schoolEnd) ? schoolEnd : now;
+
+    final step = _range.labelStepMinutes;
+    final fromMin = from.hour * 60 + from.minute;
+    final toMin = to.hour * 60 + to.minute;
+    final lo = (fromMin ~/ step) * step;
+    var hi = ((toMin + step - 1) ~/ step) * step;
+    if (hi <= lo) {
+      hi = lo + step;
+    }
+    return [lo.toDouble(), hi.toDouble()];
   }
 
   Future<void> _fetchSectionA() async {
@@ -168,9 +244,12 @@ class _StatisticsPageState extends State<StatisticsPage> {
         _fetchHourlyForZone(_kDeptOrder[1].zoneId),
         _fetchHourlyForZone(_kDeptOrder[2].zoneId),
       ]);
+      final axis = _axisBounds();
       if (mounted) {
         setState(() {
           _hourlyByDept = lists;
+          _axisMin = axis[0];
+          _axisMax = axis[1];
           _loadingA = false;
           _errorA = null;
         });
@@ -609,14 +688,14 @@ class _StatisticsPageState extends State<StatisticsPage> {
       return _emptyChartBody();
     }
 
-    const minX = 0.0;
-    const maxX = 10.0;
+    final minX = _axisMin;
+    final maxX = _axisMax;
 
     List<FlSpot> spotsFor(List<_HourlyPoint> pts, bool sound) {
       return pts
           .map(
             (p) => FlSpot(
-              (p.hour - _kSchoolStartHour).toDouble(),
+              p.minute.toDouble(),
               sound ? p.noiseDb : p.tempC,
             ),
           )
@@ -690,15 +769,12 @@ class _StatisticsPageState extends State<StatisticsPage> {
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 32,
-              interval: 1,
+              interval: _range.labelStepMinutes.toDouble(),
               getTitlesWidget: (value, meta) {
-                final hour = _kSchoolStartHour + value.toInt();
-                if (hour > _kSchoolEndHour) {
+                if (value > maxX) {
                   return const SizedBox();
                 }
-                final label = hour >= 12
-                    ? '${hour == 12 ? 12 : hour - 12}PM'
-                    : '${hour}AM';
+                final label = _clockLabel(value.round());
                 return Padding(
                   padding: const EdgeInsets.only(top: 10),
                   child: Text(
@@ -738,10 +814,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
                 final deptName = barIndex >= 0 && barIndex < barDeptNames.length
                     ? barDeptNames[barIndex]
                     : '';
-                final hour = _kSchoolStartHour + s.x.toInt();
-                final timeLabel = hour >= 12
-                    ? '${hour == 12 ? 12 : hour - 12}:00 PM'
-                    : '$hour:00 AM';
+                final timeLabel = _clockFull(s.x.round());
                 final yLabel = isSound ? '${s.y.toStringAsFixed(1)} dB' : '${s.y.toStringAsFixed(1)} °C';
                 return LineTooltipItem(
                   '$timeLabel\n$deptName\n$yLabel',
