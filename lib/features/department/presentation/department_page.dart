@@ -5,6 +5,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/config/zone_names.dart';
+import '../../../core/services/supabase/zone_buckets.dart';
 import '../../dashboard/presentation/widgets/summary_panel.dart';
 
 // ─────────────────────────────────────────────────────────────
@@ -177,43 +178,22 @@ class _DepartmentPageState extends State<DepartmentPage> {
         return;
       }
 
-      // Cap rows ~1 Hz sampling (with headroom); 1 Day needs far more than 7.2k rows.
-      final spanSecs = math.max(1, fetchTo.difference(fetchFrom).inSeconds);
-      final rowLimit = math.min(65535, math.max(8000, spanSecs + 4096));
+      // Averaged points for this zone. Supabase does the averaging (the
+      // zone_buckets function), so a busy hour no longer hits the API's
+      // 1,000-row limit. Falls back to reading rows if it is not created yet.
+      final buckets = await fetchZoneBuckets(
+        _supabase,
+        zoneId: zoneId,
+        from: fetchFrom,
+        to: fetchTo,
+        bucketMinutes: _selectedRange.bucketMinutes,
+        firstHour: _kSchoolStartHour,
+        endHour: _kSchoolEndHour,
+      );
 
-      // Query Supabase — bucket client-side by school hour.
-      final rows = await _supabase
-          .from('sensor_readings')
-          .select('rms, temperature_c, created_at')
-          .eq('zone_id', zoneId)
-          .gte('created_at', fetchFrom.toIso8601String())
-          .lte('created_at', fetchTo.toIso8601String())
-          .order('created_at', ascending: true)
-          .limit(rowLimit);
-
-      // ── Bucket into hour slots ───────────────────────────
-      // Key = hour of day (7..16). Each bucket accumulates rms & temp.
-      final Map<int, List<double>> rmsByHour  = {};
-      final Map<int, List<double>> tempByHour = {};
-
-      for (final row in rows) {
-        final ts   = DateTime.parse(row['created_at'] as String).toLocal();
-        final hour = ts.hour;
-        if (hour < _kSchoolStartHour || hour >= _kSchoolEndHour) continue;
-        final step = _selectedRange.bucketMinutes;
-        final bucket = ((hour * 60 + ts.minute) ~/ step) * step;
-        final double rms  = (row['rms']           as num?)?.toDouble() ?? 0;
-        final double temp = (row['temperature_c'] as num?)?.toDouble() ?? 0;
-        rmsByHour .putIfAbsent(bucket, () => []).add(rms);
-        tempByHour.putIfAbsent(bucket, () => []).add(temp);
-      }
-
-      // Convert to _HourlyPoint list — only hours that have data
-      final points = rmsByHour.keys.map((bucket) {
-        final avgRms  = rmsByHour[bucket]!.reduce((a, b) => a + b) / rmsByHour[bucket]!.length;
-        final avgTemp = tempByHour[bucket]!.reduce((a, b) => a + b) / tempByHour[bucket]!.length;
-        final db      = avgRms > 0 ? 20 * (math.log(avgRms) / math.log(10)) : 0.0;
-        return _HourlyPoint(bucket, db, avgTemp);
+      final points = buckets.map((b) {
+        final db = b.avgRms > 0 ? 20 * (math.log(b.avgRms) / math.log(10)) : 0.0;
+        return _HourlyPoint(b.minuteOfDay, db, b.avgTemp);
       }).toList()
         ..sort((a, b) => a.minute.compareTo(b.minute));
 
@@ -235,8 +215,8 @@ class _DepartmentPageState extends State<DepartmentPage> {
           .from('noise_events')
           .select('created_at')
           .eq('zone_id', zoneId)
-          .gte('created_at', today0.toIso8601String())
-          .lte('created_at', now.toIso8601String());
+          .gte('created_at', today0.toUtc().toIso8601String())
+          .lte('created_at', now.toUtc().toIso8601String());
 
       int am = 0, pm = 0;
       for (final e in events) {
@@ -249,7 +229,14 @@ class _DepartmentPageState extends State<DepartmentPage> {
       }
 
       // ── Latest reading for the stats strip ───────────────
-      final latest = rows.isNotEmpty ? rows.last : null;
+      final latestRows = await _supabase
+          .from('sensor_readings')
+          .select('rms, temperature_c')
+          .eq('zone_id', zoneId)
+          .gte('created_at', fetchFrom.toUtc().toIso8601String())
+          .order('created_at', ascending: false)
+          .limit(1);
+      final latest = latestRows.isNotEmpty ? latestRows.first : null;
       double latestDb   = 0;
       double latestTemp = 0;
       if (latest != null) {
@@ -265,7 +252,7 @@ class _DepartmentPageState extends State<DepartmentPage> {
           _axisMax      = axisMax.toDouble();
           _latestDb     = latestDb;
           _latestTemp   = latestTemp;
-          _latestType   = rows.isNotEmpty ? 'Ambient' : '—';
+          _latestType   = latest != null ? 'Ambient' : '—';
           _latestStatus = latestDb >= 72 ? 'Critical'
                         : latestDb >= 60 ? 'Warning'
                         : latestDb >= 45 ? 'Stable'
@@ -277,6 +264,7 @@ class _DepartmentPageState extends State<DepartmentPage> {
         });
       }
     } catch (e) {
+      debugPrint('[Department] load failed: $e');
       if (mounted) {
         setState(() { _loading = false; _error = e.toString(); });
       }
