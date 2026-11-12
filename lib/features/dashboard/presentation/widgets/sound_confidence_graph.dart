@@ -121,22 +121,33 @@ class _SoundItem {
   final String label;
   final double percent;
 
-  /// Distinct colors for the stacked bar segments so each sound type
-  /// is immediately distinguishable.
-  static const _palette = [
-    Color(0xFF0A84FF), // blue
-    Color(0xFF30D158), // green
-    Color(0xFFFF9F0A), // amber
-    Color(0xFFBF5AF2), // purple
-    Color(0xFFFF453A), // red
-    Color(0xFF64D2FF), // cyan
-    Color(0xFFFFD60A), // yellow
+  /// Fixed color per sound type, so a type always looks the same:
+  /// quiet is calm green, loud/alarming types are warm colors.
+  /// (Labels arrive already prettified: "table dragging", not "table_dragging".)
+  static const Map<String, Color> _byLabel = {
+    'quiet': Color(0xFF30D158), // green
+    'talking': Color(0xFF0A84FF), // blue
+    'clapping': Color(0xFFFF9F0A), // amber
+    'shouting': Color(0xFFFF453A), // red
+    'table dragging': Color(0xFFBF5AF2), // purple
+    'phone': Color(0xFF64D2FF), // cyan
+    'uncertain': Color(0xFF8E8E93), // grey
+    'unknown': Color(0xFF8E8E93), // grey
+  };
+
+  /// Only used for labels that are not in [_byLabel] (e.g. the demo stream).
+  static const _fallbackPalette = [
+    Color(0xFF0A84FF),
+    Color(0xFFFF9F0A),
+    Color(0xFFBF5AF2),
+    Color(0xFF64D2FF),
+    Color(0xFFFFD60A),
   ];
 
   Color get color {
-    final index = label.hashCode.abs() % _palette.length;
-    return _palette[index].withValues(alpha: 0.88);
+    final fixed = _byLabel[label.toLowerCase().trim()];
+    if (fixed != null) return fixed.withValues(alpha: 0.88);
+    final index = label.hashCode.abs() % _fallbackPalette.length;
+    return _fallbackPalette[index].withValues(alpha: 0.88);
   }
 }
-
-
