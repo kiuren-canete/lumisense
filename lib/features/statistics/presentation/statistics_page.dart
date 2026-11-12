@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../../../core/config/zone_names.dart';
+import '../../../core/services/supabase/zone_buckets.dart';
 
 // ── School hours (match department_page) ────────────────────
 const int _kSchoolStartHour = 7;
@@ -172,42 +173,21 @@ class _StatisticsPageState extends State<StatisticsPage> {
       return [];
     }
 
-    final spanSecs = math.max(1, fetchTo.difference(fetchFrom).inSeconds);
-    final rowLimit = math.min(65535, math.max(8000, spanSecs + 4096));
+    // Averaged by Supabase (zone_buckets function) so a busy hour does not
+    // hit the API's 1,000-row limit; falls back to reading rows if missing.
+    final buckets = await fetchZoneBuckets(
+      _supabase,
+      zoneId: zoneId,
+      from: fetchFrom,
+      to: fetchTo,
+      bucketMinutes: _range.bucketMinutes,
+      firstHour: _kSchoolStartHour,
+      endHour: _kSchoolEndHour,
+    );
 
-    final rows = await _supabase
-        .from('sensor_readings')
-        .select('rms, temperature_c, created_at')
-        .eq('zone_id', zoneId)
-        .gte('created_at', fetchFrom.toIso8601String())
-        .lte('created_at', fetchTo.toIso8601String())
-        .order('created_at', ascending: true)
-        .limit(rowLimit);
-
-    final rmsByHour = <int, List<double>>{};
-    final tempByHour = <int, List<double>>{};
-
-    for (final row in rows) {
-      final ts = DateTime.parse(row['created_at'] as String).toLocal();
-      final hour = ts.hour;
-      if (hour < _kSchoolStartHour || hour >= _kSchoolEndHour) {
-        continue;
-      }
-      final step = _range.bucketMinutes;
-      final bucket = ((hour * 60 + ts.minute) ~/ step) * step;
-      final rms = (row['rms'] as num?)?.toDouble() ?? 0;
-      final temp = (row['temperature_c'] as num?)?.toDouble() ?? 0;
-      rmsByHour.putIfAbsent(bucket, () => []).add(rms);
-      tempByHour.putIfAbsent(bucket, () => []).add(temp);
-    }
-
-    return rmsByHour.keys.map((bucket) {
-      final avgRms =
-          rmsByHour[bucket]!.reduce((a, b) => a + b) / rmsByHour[bucket]!.length;
-      final avgTemp =
-          tempByHour[bucket]!.reduce((a, b) => a + b) / tempByHour[bucket]!.length;
-      final db = avgRms > 0 ? 20 * (math.log(avgRms) / math.log(10)) : 0.0;
-      return _HourlyPoint(bucket, db, avgTemp);
+    return buckets.map((b) {
+      final db = b.avgRms > 0 ? 20 * (math.log(b.avgRms) / math.log(10)) : 0.0;
+      return _HourlyPoint(b.minuteOfDay, db, b.avgTemp);
     }).toList()
       ..sort((a, b) => a.minute.compareTo(b.minute));
   }
@@ -255,6 +235,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
         });
       }
     } catch (e) {
+      debugPrint('[Statistics] charts failed: $e');
       if (mounted) {
         setState(() {
           _loadingA = false;
@@ -297,8 +278,8 @@ class _StatisticsPageState extends State<StatisticsPage> {
         .from('noise_events')
         .select('noise_label, created_at')
         .eq('zone_id', dept.zoneId)
-        .gte('created_at', today0.toIso8601String())
-        .lte('created_at', now.toIso8601String());
+        .gte('created_at', today0.toUtc().toIso8601String())
+        .lte('created_at', now.toUtc().toIso8601String());
 
     final counts = <String, int>{};
     var am = 0;
@@ -341,7 +322,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
       final rows = await _supabase
           .from('noise_events')
           .select('zone_id, noise_label, rms, created_at')
-          .gte('created_at', start.toIso8601String())
+          .gte('created_at', start.toUtc().toIso8601String())
           .limit(10000);
 
       final filtered = rows.where((row) {
