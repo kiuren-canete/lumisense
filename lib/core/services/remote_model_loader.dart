@@ -2,20 +2,9 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// Checks Supabase for an admin-uploaded replacement sound model and
-/// downloads it into local app storage if it's newer than what's already
-/// cached on disk. This lets the client swap the model without a new app
-/// build — the bundled `assets/models/sound_model.json` is always the
-/// fallback if nothing has been uploaded yet, or if the download fails
-/// or the file is not a valid model.
-///
-/// A model is ONE .json file (made by ai_training/train_sound_model.py).
 class RemoteModelLoader {
   static const _bucket = 'ml-models';
 
-  /// Returns the local path of the downloaded model .json if a remote
-  /// model is available (or already cached), otherwise null — callers
-  /// then fall back to the bundled model.
   static Future<String?> fetch(String modelType) async {
     try {
       final client = Supabase.instance.client;
@@ -49,15 +38,11 @@ class RemoteModelLoader {
 
       return modelPath;
     } catch (_) {
-      // Offline, bucket not set up yet, corrupt row, etc. — never let a
-      // bad remote model prevent the app from starting.
       return null;
     }
   }
 
-  /// Uploads a replacement model (one .json file) and marks it as the
-  /// current version for [modelType]. Every device picks it up the next
-  /// time [fetch] runs (app startup), no rebuild required.
+
   static Future<bool> upload({
     required String modelType,
     required File modelFile,
@@ -74,9 +59,7 @@ class RemoteModelLoader {
             fileOptions: const FileOptions(upsert: true),
           );
 
-      // ml_model_versions still has labels_path / scaler_path columns that
-      // cannot be empty. The labels and scaler now live inside the one JSON
-      // file, so all three columns point at it.
+
       await client.from('ml_model_versions').upsert({
         'model_type': modelType,
         'storage_path': path,
@@ -93,8 +76,6 @@ class RemoteModelLoader {
     }
   }
 
-  /// The currently-active version tag for [modelType], or null if no
-  /// custom model has been uploaded (still using the bundled model).
   static Future<String?> currentVersion(String modelType) async {
     try {
       final row = await Supabase.instance.client

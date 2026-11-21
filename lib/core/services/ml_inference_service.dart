@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'remote_model_loader.dart';
 
-/// One row of `sensor_readings` (what one ESP32 sent at one moment).
 class SensorReading {
   const SensorReading({
     required this.id,
@@ -31,7 +30,6 @@ class _DenseLayer {
     required this.activation,
   });
 
-  /// weights[i][j] = connection from input i to output j
   final List<List<double>> weights;
   final List<double> bias;
   final String activation; // 'relu' | 'softmax'
@@ -69,13 +67,6 @@ class _DenseLayer {
   }
 }
 
-/// The trained sound-type network, run in plain Dart (no native library).
-/// Loaded from assets/models/sound_model.json, which is produced by
-/// ai_training/train_sound_model.py.
-///
-/// It looks at a WINDOW of the last few readings of one zone and turns them
-/// into 9 numbers (how loud, how spiky, how variable). [features] must stay
-/// identical to window_features() in that Python script.
 class SoundWindowModel {
   SoundWindowModel._({
     required this.classes,
@@ -219,20 +210,7 @@ class SoundWindowModel {
   }
 }
 
-/// Classifies the SOUND TYPE heard by each zone (quiet / talking / clapping /
-/// shouting / table_dragging / phone), using the last few readings of that zone.
-///
-/// Replaces the old TFLite version: it needs no native library, so it also
-/// works on Windows without a DLL.
-///
-/// Output of [classifySound]:
-///   label           top class, or 'uncertain' when the top probability is low,
-///                   or 'unknown' when there are too few recent readings
-///   confidence      probability of the top class
-///   profile         every class with its probability, highest first
-///   windowMeanRms   average rms over the readings used (also used by the
-///                   source detection, which compares zones)
-///   readingsUsed    how many readings were in the window
+
 class MLInferenceService {
   MLInferenceService();
 
@@ -250,7 +228,7 @@ class MLInferenceService {
   SoundWindowModel? get model => _model;
 
   Future<void> initialize() async {
-    // 1) A model uploaded by an admin (Settings > AI Model Management)
+
     try {
       final remotePath = await RemoteModelLoader.fetch(_modelType);
       if (remotePath != null) {
@@ -263,7 +241,7 @@ class MLInferenceService {
       debugPrint('⚠ Uploaded sound model unusable, falling back to bundled: $e');
     }
 
-    // 2) The model bundled inside the app
+
     try {
       final text = await rootBundle.loadString(_assetPath);
       _model = SoundWindowModel.fromJson(jsonDecode(text) as Map<String, dynamic>);
@@ -273,8 +251,6 @@ class MLInferenceService {
     }
   }
 
-  /// Call with the latest reading of a zone. The same reading may be passed
-  /// again and again (the realtime stream repeats it) — repeats are ignored.
   Map<String, dynamic> classifySound({
     required int zoneId,
     required int readingId,
@@ -311,11 +287,10 @@ class MLInferenceService {
     }
     final meanRms = sum / window.length;
 
-    // Too few recent readings to judge the sound type.
+  
     if (window.length < model.minReadings) {
       if (rms < model.fallbackQuietRms) {
-        // The ESP32 only sends slowly when the room is quiet, so a single
-        // very low reading means quiet (simple rule, not the network).
+
         return _result(
           'quiet',
           1.0,
@@ -345,8 +320,7 @@ class MLInferenceService {
     return _result(label, confidence, profile, meanRms, window.length);
   }
 
-  /// The newest readings (at most [SoundWindowModel.window]) that are not
-  /// older than maxAgeSeconds compared to the latest one.
+
   List<SensorReading> _recentWindow(
     List<SensorReading> buffer,
     SoundWindowModel model,

@@ -121,9 +121,6 @@ class _SoundItem {
   final String label;
   final double percent;
 
-  /// Fixed color per sound type, so a type always looks the same:
-  /// quiet is calm green, loud/alarming types are warm colors.
-  /// (Labels arrive already prettified: "table dragging", not "table_dragging".)
   static const Map<String, Color> _byLabel = {
     'quiet': Color(0xFF30D158), // green
     'talking': Color(0xFF0A84FF), // blue
@@ -135,7 +132,6 @@ class _SoundItem {
     'unknown': Color(0xFF8E8E93), // grey
   };
 
-  /// Only used for labels that are not in [_byLabel] (e.g. the demo stream).
   static const _fallbackPalette = [
     Color(0xFF0A84FF),
     Color(0xFFFF9F0A),

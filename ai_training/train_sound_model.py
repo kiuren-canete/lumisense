@@ -1,23 +1,3 @@
-"""
-============================================================
-LUMISENSE · ANN Sound Classification Trainer (Lightweight)
-============================================================
-This script:
-  1. Reads sensor data from training_data.csv (Avg, Peak, Min, RMS, Label)
-  2. Trains a simple ANN (Artificial Neural Network) to classify sounds
-  3. Exports the model as a TFLite file for use in the Flutter app
-
-The input is the EXACT same 4 numbers the INMP441 sensor produces.
-No audio processing, no spectrograms, no heavy libraries needed.
-
-Usage:
-  python train_sound_model.py
-
-Output:
-  - ai_training/models/sound_classifier.tflite
-  - ai_training/models/class_labels.txt
-============================================================
-"""
 
 import os
 import sys

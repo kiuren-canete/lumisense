@@ -4,11 +4,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/config/zone_names.dart';
 
-/// Shows the fused 3-sensor model's live read on where a noise event is
-/// actually coming from — distinct from the per-zone "what kind of sound"
-/// classification shown elsewhere. This is the piece that compares all 3
-/// sensors against each other, since sound leaks between rooms and a
-/// single sensor alone can't tell you the true source.
+
 class AiSourceDetectionCard extends StatelessWidget {
   const AiSourceDetectionCard({super.key});
 
@@ -31,10 +27,7 @@ class AiSourceDetectionCard extends StatelessWidget {
         builder: (context, snapshot) {
           final row = (snapshot.data?.isNotEmpty ?? false) ? snapshot.data!.first : null;
           final bool noiseDetected = row?['noise_detected'] as bool? ?? false;
-          // The model was trained before the department rename and its
-          // .tflite still internally outputs the ORIGINAL labels ('IT
-          // Department', etc.) — translate to the current display name
-          // here, right before showing it. See lib/core/config/zone_names.dart.
+
           final String? rawSource = row?['likely_source'] as String?;
           final String? likelySource =
               rawSource == null ? null : ZoneNames.forModelLabel(rawSource);

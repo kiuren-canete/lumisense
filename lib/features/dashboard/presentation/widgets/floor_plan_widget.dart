@@ -33,27 +33,18 @@ class _ZoneConfig {
   });
 }
 
-// Coordinates are normalized (0..1) against the floor plan area and were
-// picked to land the sensor point on the center of each of the 3 tables
-// in assets/images/map_main.png (top table, left table, bottom table).
+
 const _zones = [
   _ZoneConfig(id: 1, title: ZoneNames.zone1, x: 0.50, y: 0.21),
   _ZoneConfig(id: 2, title: ZoneNames.zone2, x: 0.19, y: 0.53),
   _ZoneConfig(id: 3, title: ZoneNames.zone3, x: 0.50, y: 0.76),
 ];
 
-// Native pixel dimensions of assets/images/map_main.png. Used so the floor
-// plan is always contain-fit (never cropped) inside its box. If the image
-// asset is ever swapped for one with different dimensions, update these two
-// numbers to match its actual pixel width/height.
+
 const double _mapImageWidth = 1532;
 const double _mapImageHeight = 1027;
 const double _mapAspectRatio = _mapImageWidth / _mapImageHeight;
 
-/// The largest rect of size matching [aspectRatio] that fits inside a
-/// [boxWidth] x [boxHeight] box, centered — the same math BoxFit.contain
-/// uses internally. Exposed here so sibling widgets (the pins) can be laid
-/// out in the exact same coordinate space as the image.
 class _FitRect {
   const _FitRect(this.left, this.top, this.width, this.height);
   final double left;
@@ -67,11 +58,9 @@ _FitRect _containRect(double boxWidth, double boxHeight, double aspectRatio) {
   double width;
   double height;
   if (boxAspect > aspectRatio) {
-    // Box is relatively wider than the image -> height is the limiting side.
     height = boxHeight;
     width = height * aspectRatio;
   } else {
-    // Box is relatively taller/narrower than the image -> width is limiting.
     width = boxWidth;
     height = width / aspectRatio;
   }
@@ -90,7 +79,6 @@ class _FloorPlanWidgetState extends State<FloorPlanWidget> {
   @override
   void initState() {
     super.initState();
-    // Keep demo data spinning just in case it's used
     for (final z in _zones) {
       _demoEvents[z.id] = _AiEvent.random(_rng);
     }
@@ -193,11 +181,6 @@ class _FloorPlanWidgetState extends State<FloorPlanWidget> {
                 padding: const EdgeInsets.all(18),
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    // Compute the largest rect that fits the image's native
-                    // aspect ratio inside the available space without
-                    // cropping (like BoxFit.contain), so the whole floor
-                    // plan is always visible no matter the window size or
-                    // future edits to the image's own dimensions.
                     final rect = _containRect(
                       constraints.maxWidth,
                       constraints.maxHeight,
@@ -207,8 +190,6 @@ class _FloorPlanWidgetState extends State<FloorPlanWidget> {
                     return Stack(
                       clipBehavior: Clip.none,
                       children: [
-                        // Floor Plan Background (room layout with the 3
-                        // sensor tables), sized to the fitted rect.
                         Positioned(
                           left: rect.left,
                           top: rect.top,
@@ -218,9 +199,6 @@ class _FloorPlanWidgetState extends State<FloorPlanWidget> {
                             borderRadius: BorderRadius.circular(12),
                             child: Image.asset(
                               'assets/images/map_main.png',
-                              // rect already matches the image's aspect
-                              // ratio, so `fill` here never stretches or
-                              // crops it.
                               fit: BoxFit.fill,
                               color: AppColors.background.withValues(alpha: 0.1),
                               colorBlendMode: BlendMode.darken,
@@ -228,14 +206,9 @@ class _FloorPlanWidgetState extends State<FloorPlanWidget> {
                           ),
                         ),
 
-                        // Sensor pins, positioned relative to the same
-                        // fitted rect so they stay locked to their tables.
                         ..._zones.expand((zone) {
                           final event = currentEvents[zone.id];
                           if (event == null) return const <Widget>[];
-                          // Dot color reflects sensor connectivity/status:
-                          // black = inactive (no recent data), green = active
-                          // and stable, red = active but noisy.
                           final dotColor = event.isInactive
                               ? Colors.black
                               : switch (event.severity) {
@@ -246,8 +219,6 @@ class _FloorPlanWidgetState extends State<FloorPlanWidget> {
                           final left = rect.left + zone.x * rect.width;
                           final top = rect.top + zone.y * rect.height;
                           return <Widget>[
-                            // Glowing GPS-style ripple pinned exactly on
-                            // the table where the physical sensor sits.
                             Positioned(
                               left: left,
                               top: top,
@@ -303,10 +274,6 @@ class _FloorPlanWidgetState extends State<FloorPlanWidget> {
     );
   }
 }
-
-/// A GPS-marker-style animated beacon: a solid glowing core with two
-/// concentric rings that continuously expand and fade outward, used to mark
-/// the physical location of a sensor on a table.
 class _RipplePulse extends StatefulWidget {
   const _RipplePulse({required this.color});
 

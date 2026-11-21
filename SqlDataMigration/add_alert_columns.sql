@@ -1,19 +1,3 @@
--- ============================================================
--- LUMISENSE · Add device-side alert state to sensor_readings
--- Run in: Supabase Dashboard -> SQL Editor
--- Location in repo: SqlDataMigration/add_alert_columns.sql
---
--- WHY:
---   Lumisense firmware v5 decides LED color + buzzer ON THE ESP32.
---   It now reports what it decided so the dashboard shows what the
---   device actually did (not a second, possibly different, calculation).
---
--- SAFE TO RUN:
---   * Only ADDS two columns with defaults. Nothing is deleted.
---   * Old firmware (that does not send these fields) keeps working:
---     rows just get alert_level='quiet', buzzer_on=false.
---   * Running it twice is harmless (IF NOT EXISTS / DROP IF EXISTS).
--- ============================================================
 
 alter table public.sensor_readings
   add column if not exists alert_level text    not null default 'quiet',

@@ -1,8 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// One averaged chart point of a zone (used by the Department and
-/// Statistics pages).
 class ZoneBucket {
   const ZoneBucket({
     required this.minuteOfDay,
@@ -10,7 +8,6 @@ class ZoneBucket {
     required this.avgTemp,
   });
 
-  /// Start of the bucket in the PC's local time, minutes since midnight.
   final int minuteOfDay;
   final double avgRms;
   final double avgTemp;
@@ -22,20 +19,7 @@ class _Acc {
   int n = 0;
 }
 
-/// Average rms / temperature of one zone per [bucketMinutes] between [from]
-/// and [to], keeping only buckets that start between [firstHour]:00 and
-/// [endHour]:00 local time.
-///
-/// Normal path: the `zone_buckets` function in Supabase does the averaging
-/// (SqlDataMigration/add_zone_buckets_function.sql). Supabase only returns
-/// 1,000 rows per request, which a busy hour of 1-second readings exceeds,
-/// so averaging on the server is the reliable way.
-///
-/// Fallback (function not created yet): download the rows page by page and
-/// average them here. Slower, but the charts still work.
-///
-/// Everything is logged with debugPrint so the Flutter console shows what
-/// was asked and how many rows/buckets came back.
+
 Future<List<ZoneBucket>> fetchZoneBuckets(
   SupabaseClient client, {
   required int zoneId,
@@ -45,12 +29,11 @@ Future<List<ZoneBucket>> fetchZoneBuckets(
   required int firstHour,
   required int endHour,
 }) async {
-  // Always send UTC: a local time without a "Z" is read by Supabase as UTC,
-  // which shifts the window by the PC's UTC offset (+8 h in the Philippines).
+
   final fromUtc = from.toUtc().toIso8601String();
   final toUtc = to.toUtc().toIso8601String();
   final bucketSeconds = bucketMinutes * 60;
-  final acc = <int, _Acc>{}; // key = bucket start, epoch seconds
+  final acc = <int, _Acc>{};
   var source = 'rpc';
 
   try {

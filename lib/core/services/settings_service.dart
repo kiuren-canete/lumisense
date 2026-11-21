@@ -2,14 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/app_settings.dart';
 
-/// Singleton service that loads app settings from Supabase once on startup
-/// and exposes them as a [ValueNotifier].
-///
-/// Usage:
-///   final settings = SettingsService.instance.settings.value;
-///
-/// To react to changes:
-///   SettingsService.instance.settings.addListener(() { ... });
+
 class SettingsService {
   SettingsService._();
   static final SettingsService instance = SettingsService._();
@@ -19,10 +12,6 @@ class SettingsService {
 
   bool _loaded = false;
 
-  // ── Public API ──────────────────────────────────────────────────────────
-
-  /// Call once at app startup (e.g. in main.dart after Supabase.initialize).
-  /// Safe to call multiple times — only fetches once unless [force] is true.
   Future<void> load({bool force = false}) async {
     if (_loaded && !force) return;
     try {
@@ -38,11 +27,9 @@ class SettingsService {
       }
       _loaded = true;
     } catch (_) {
-      // Network error — keep defaults; try again next time
     }
   }
 
-  /// Persist a new [AppSettings] to Supabase and update the local notifier.
   Future<bool> save(AppSettings newSettings) async {
     try {
       final client = Supabase.instance.client;

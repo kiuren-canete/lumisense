@@ -6,7 +6,6 @@ import '../../../../core/services/settings_service.dart';
 import '../../../../core/theme/app_colors.dart';
 import 'sound_confidence_graph.dart';
 
-// _kTempMinC is fixed (hardware/environment spec — not user-adjustable)
 const double _kTempMinC = 19.0;
 
 class DepartmentCard extends StatelessWidget {
@@ -16,14 +15,14 @@ class DepartmentCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ── INACTIVE STATE ───────────────────────────────────────
+  
     if (snapshot.isInactive) {
       return _InactiveZoneCard(snapshot: snapshot);
     }
 
     final status = _statusInfo(snapshot.noiseLevel);
 
-    // Threshold checks for visual indicators — use live settings
+
     final s = SettingsService.instance.settings.value;
     final bool soundBreached = snapshot.noiseDb > s.noiseWarningThreshold;
     final bool tempHot       = snapshot.temperatureC > s.tempThreshold;
@@ -33,7 +32,7 @@ class DepartmentCard extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // ── HEADER ──────────────────────────────────────────
+  
         Row(
           children: [
             Container(
@@ -80,7 +79,6 @@ class DepartmentCard extends StatelessWidget {
         const Divider(color: AppColors.separator, thickness: 0.5, height: 1),
         const SizedBox(height: 8),
 
-        // ── METRICS ──────────────────────────────────────────
         _MetricRow(
           icon: LucideIcons.volume2,
           label: 'Sound Level',
@@ -102,7 +100,6 @@ class DepartmentCard extends StatelessWidget {
                   : '',
         ),
 
-        // ── THRESHOLD BANNER (shows when any limit is exceeded) ──
         if (soundBreached || tempBreached) ...[
           const SizedBox(height: 4),
           _ThresholdBanner(soundBreached: soundBreached, tempBreached: tempBreached),
@@ -143,9 +140,7 @@ class DepartmentCard extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  INACTIVE ZONE CARD
-// ─────────────────────────────────────────────────────────────────────────────
+
 class _InactiveZoneCard extends StatelessWidget {
   const _InactiveZoneCard({required this.snapshot});
   final ZoneSnapshot snapshot;
@@ -234,9 +229,7 @@ class _InactiveZoneCard extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  THRESHOLD BANNER
-// ─────────────────────────────────────────────────────────────────────────────
+
 class _ThresholdBanner extends StatelessWidget {
   const _ThresholdBanner({
     required this.soundBreached,
@@ -286,9 +279,6 @@ class _ThresholdBanner extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  SHARED INNER WIDGETS
-// ─────────────────────────────────────────────────────────────────────────────
 class _StatusData {
   final String label;
   final Color color;

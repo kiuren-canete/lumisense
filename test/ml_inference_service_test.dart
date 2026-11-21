@@ -5,16 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:lumisense_monitor/core/services/ml_inference_service.dart';
 import 'package:lumisense_monitor/core/services/source_inference_service.dart';
 
-/// Run from the project root:   flutter test test/ml_inference_service_test.dart
-///
-/// The "golden" numbers were produced by the Python trainer
-/// (ai_training/train_sound_model.py), so these tests prove the Dart code
-/// computes exactly what the trained model expects.
-///
-/// NOTE: the golden numbers belong to the CURRENT assets/models/sound_model.json.
-/// If you retrain and replace that file, regenerate the golden numbers (or the
-/// 'golden window' tests will fail while everything else still works).
-
 class _Golden {
   const _Golden({
     required this.name,

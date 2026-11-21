@@ -223,10 +223,6 @@ class _LiveZonesPanel extends StatelessWidget {
   }
 
   Widget _buildZones(BuildContext context) {
-    // Now that this panel sits in a wide strip below the map instead of a
-    // tall side column, lay the department cards out side by side. Each
-    // card scrolls independently in case its content is taller than the
-    // strip, so nothing gets clipped or causes an overflow.
     final children = <Widget>[];
     for (var i = 0; i < zones.length; i++) {
       if (i > 0) {

@@ -1,7 +1,4 @@
--- ============================================================
--- LUMISENSE · Supabase Database Schema
--- Simplified Hardware Architecture (Sensor & Data)
--- ============================================================
+
 
 -- TABLE 1: SENSORS (Zones)
 create table sensors (

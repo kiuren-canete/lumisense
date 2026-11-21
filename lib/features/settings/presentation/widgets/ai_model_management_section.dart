@@ -5,21 +5,6 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../../../core/services/remote_model_loader.dart';
 import '../../../../core/theme/app_colors.dart';
 
-/// Settings > AI Model Management.
-///
-/// Lets an admin upload a replacement sound-type model: ONE .json file made
-/// by ai_training/train_sound_model.py (labels and scaler are inside it).
-/// The upload goes to Supabase Storage; every device picks up the new model
-/// automatically on next app start — no rebuild needed. A file that is not a
-/// valid model is ignored and the bundled model keeps running.
-/// See lib/core/services/remote_model_loader.dart.
-/// (Which-zone detection is a fixed rule now, so it has nothing to upload.)
-///
-/// NOTE: gated on the same UserRole placeholder used elsewhere in the app
-/// (see statistics_report_page.dart). That enum isn't yet wired to a real
-/// authenticated session/role lookup — until it is, this section is
-/// visible to anyone who reaches Settings. Flagging this so it isn't
-/// mistaken for enforced access control.
 class AiModelManagementSection extends StatefulWidget {
   const AiModelManagementSection({super.key});
 

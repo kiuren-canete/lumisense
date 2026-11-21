@@ -49,17 +49,9 @@ class MockTelemetryRepository implements TelemetryRepository {
     }).toList();
   }
 
-  /// Generates a realistic mock sound classification profile per department.
-  ///
-  /// Each department has a distinct noise signature reflecting its environment:
-  ///  • IT   — keyboard typing, fan noise, conversation
-  ///  • CS   — conversation, phone ringing, ambient
-  ///  • Eng  — machinery, tools, loud talking
-  ///
-  /// Confidence values are randomised around department-specific baselines
-  /// so the Live Sound Profile graph feels alive.
+
   List<Map<String, dynamic>> _buildSoundProfile(String zoneId, NoiseLevel level) {
-    // Base profiles per department — (label, baseConfidence)
+
     final Map<String, List<(String, double)>> templates = {
       'it': [
         ('keyboard_typing',  0.45),

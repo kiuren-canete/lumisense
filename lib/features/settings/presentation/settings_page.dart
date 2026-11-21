@@ -13,7 +13,6 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  // Working copy — mutated by sliders/buttons; flushed to Supabase on Save
   late AppSettings _draft;
 
   bool _hasUnsavedChanges = false;
@@ -25,12 +24,9 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
-    // Start from whatever is already loaded (SettingsService.load() was called
-    // in main.dart so this is fresh from Supabase at startup).
+
     _draft = SettingsService.instance.settings.value;
 
-    // If settings reload from Supabase while we're on this page and there
-    // are no unsaved changes, adopt the fresh values.
     SettingsService.instance.settings.addListener(_onSettingsUpdated);
   }
 
@@ -210,7 +206,6 @@ class _SettingsPageState extends State<SettingsPage> {
 
                   const SizedBox(height: 32),
 
-                  // ── CONNECTIONS ──
                   const _SectionHeader(title: 'System Integration'),
                   const SizedBox(height: 16),
                   Container(

@@ -1,12 +1,11 @@
-/// Mirrors the single-row `settings` table in Supabase.
-/// All threshold / alarm values the app reads at runtime come from here.
+
 class AppSettings {
-  final double noiseWarningThreshold;  // dB — warning level
-  final double noiseCriticalThreshold; // dB — critical level
-  final double tempThreshold;          // °C — upper alert limit
-  final String alarmPattern;           // 'continuous'|'pulsing'|'escalating'|'short_burst'
-  final double alarmDurationSec;       // how long the buzzer fires
-  final double alarmCooldownSec;       // minimum gap between triggers
+  final double noiseWarningThreshold;  
+  final double noiseCriticalThreshold; 
+  final double tempThreshold;         
+  final String alarmPattern;          
+  final double alarmDurationSec;     
+  final double alarmCooldownSec;      
 
   const AppSettings({
     this.noiseWarningThreshold  = 60.0,

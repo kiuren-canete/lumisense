@@ -156,7 +156,6 @@ class _ProfilePageState extends State<ProfilePage> {
     setState(() => _isSavingPass = true);
 
     try {
-      // Re-authenticate with current password to verify identity
       final user  = _supabase.auth.currentUser!;
       final email = user.email!;
 
@@ -165,7 +164,6 @@ class _ProfilePageState extends State<ProfilePage> {
         password: current,
       );
 
-      // Now update to the new password
       await _supabase.auth.updateUser(
         UserAttributes(password: newPass),
       );
@@ -598,8 +596,6 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 }
-
-// ── Reusable password field ──────────────────────────────────────
 
 class _PasswordField extends StatelessWidget {
   final TextEditingController controller;

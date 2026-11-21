@@ -9,26 +9,18 @@ import '../ml_inference_service.dart';
 import '../source_inference_service.dart';
 import '../settings_service.dart';
 
-// ─────────────────────────────────────────────────────────────
-//  FIXED CONSTANTS (not user-configurable)
-// ─────────────────────────────────────────────────────────────
-const double _kTempMinC           = 19.0;   // °C — lower bound (fixed spec)
+
+const double _kTempMinC           = 19.0;   
 const Duration _kInactiveDuration = Duration(minutes: 10);
 
-/// Connects to Supabase and listens for real-time sensor data.
-/// Uses the full LUMISENSE SQL schema: sensor_readings, zone_status,
-/// noise_events, audit_logs, buzzer_control.
 class SupabaseTelemetryRepository implements TelemetryRepository {
   final SupabaseClient _client = Supabase.instance.client;
   final MLInferenceService _mlService = MLInferenceService();
   final SourceInferenceService _sourceMlService = SourceInferenceService();
 
-  // Tracks which zones have already been logged as INACTIVE this cycle
-  // so we don't spam the audit_logs on every stream event.
+
   final Set<int> _inactiveLogged = {};
 
-  // The source prediction used to be written on EVERY stream update (thousands
-  // of rows a day). Now: only when the answer changes, or every 30 seconds.
   static const Duration _sourceWriteEvery = Duration(seconds: 30);
   DateTime? _lastSourceWrite;
   String? _lastSourceKey;
@@ -53,10 +45,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
         }
 
         final List<ZoneSnapshot> snapshots = [];
-        // Collected alongside snapshots so we can run the 3-sensor SOURCE
-        // detection once per cycle (which zone hears the noise loudest).
-        // Keys are zone ids: 1=HIGHSCHOOL (old IT), 2=STEM/HUMSS (old CS),
-        // 3=GAS/TVL (old Engineering).
         final Map<int, double> zoneWindowRms = {};
         final Map<int, String> zoneSoundLabels = {};
 
@@ -72,7 +60,7 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
           final DateTime updatedAt =
               DateTime.parse(row['created_at'] as String);
 
-          // ── INACTIVE CHECK ─────────────────────────────────
+
           final bool isInactive =
               DateTime.now().difference(updatedAt) >= _kInactiveDuration;
 
@@ -81,7 +69,7 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
               _inactiveLogged.add(zoneId);
               _logInactiveZone(zoneId: zoneId, lastSeen: updatedAt);
             }
-            // Still show zone in UI but flagged as inactive
+
             snapshots.add(ZoneSnapshot(
               zoneId: zoneId.toString(),
               zoneName: _getZoneName(zoneId),
@@ -96,7 +84,7 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
             continue;
           }
 
-          // Zone came back online — clear the logged flag
+
           _inactiveLogged.remove(zoneId);
 
           // ── dB CONVERSION ───────────────────────────────────
@@ -121,8 +109,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
           );
           final String soundClass = result['label'] as String;
 
-          // Remember this zone's window loudness + sound type for the
-          // SOURCE detection below (needs all 3 zones at once).
           zoneWindowRms[zoneId] = (result['windowMeanRms'] as num).toDouble();
           zoneSoundLabels[zoneId] = soundClass;
           final List<Map<String, dynamic>> soundProfile =
@@ -131,10 +117,10 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
                   .toList() ??
               const <Map<String, dynamic>>[];
 
-          // Compute noise level — if either threshold is breached, escalate
+
           NoiseLevel level = _resolveNoiseLevel(rawNoiseDb);
           if (soundBreached || tempBreached) {
-            // Ensure at minimum "warning" when a threshold is exceeded
+
             if (level.index < NoiseLevel.warning.index) {
               level = NoiseLevel.warning;
             }
@@ -143,7 +129,7 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
           final bool alertRaised =
               level == NoiseLevel.warning || level == NoiseLevel.critical;
 
-          // Push AI analysis + threshold decisions back to Supabase
+
           _updateBackendStatus(
             zoneId: zoneId,
             noiseLabel: soundClass,
@@ -171,10 +157,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
           ));
         }
 
-        // ── FUSED SOURCE CLASSIFICATION ────────────────────────
-        // Only meaningful once we have a fresh, simultaneous reading
-        // from all 3 zones this cycle — a partial set (e.g. one zone
-        // inactive) can't be compared fairly against the others.
         if (zoneWindowRms.length == 3) {
           final sourceResult = _sourceMlService.classifySource(
             windowRms: zoneWindowRms,
@@ -189,8 +171,7 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
               now.difference(_lastSourceWrite!) >= _sourceWriteEvery) {
             _lastSourceKey = sourceKey;
             _lastSourceWrite = now;
-            // Column names (cs_rms / eng_rms / it_rms) are kept from the
-            // old schema: cs = zone 2, eng = zone 3, it = zone 1.
+
             _recordSourcePrediction(
               sourceResult: sourceResult,
               csRms: zoneWindowRms[2]!,
@@ -207,11 +188,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  Mute or un-mute the buzzer for a zone.
-  //  mute=true  → mode='manual', manual_state=false (silenced)
-  //  mute=false → mode='auto'   (restored to AI control)
-  // ─────────────────────────────────────────────────────────
   Future<void> setMuteZone({
     required int zoneId,
     required bool mute,
@@ -226,11 +202,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
     } catch (_) {}
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  Trigger the buzzer override for a specific zone.
-  //  Sets mode='manual' + manual_state=true then resets after
-  //  [durationSeconds] seconds.
-  // ─────────────────────────────────────────────────────────
   Future<void> triggerBuzzerOverride({
     required int zoneId,
     int durationSeconds = 5,
@@ -243,7 +214,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
         'updated_at': DateTime.now().toIso8601String(),
       });
 
-      // Auto-reset after the given duration
       Future.delayed(Duration(seconds: durationSeconds), () async {
         try {
           await _client.from('buzzer_control').upsert({
@@ -257,9 +227,7 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
     } catch (_) {}
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  Write to Supabase after every AI classification cycle
-  // ─────────────────────────────────────────────────────────
+
   Future<void> _updateBackendStatus({
     required int zoneId,
     required String noiseLabel,
@@ -312,7 +280,7 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
           'severity': levelStr == 'critical' ? 'critical' : 'warning',
         });
 
-        // Also write to audit_logs so the Statistics page picks it up
+
         await _client.from('audit_logs').insert({
           'zone_id': zoneId,
           'department': _getDepartmentShort(zoneId),
@@ -320,8 +288,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
           'severity': levelStr == 'critical' ? 'critical' : 'warning',
         });
       }
-
-      // Threshold-specific audit log entries (sound / temp)
       if (soundBreached) {
         final s = SettingsService.instance.settings.value;
         await _logThresholdBreach(
@@ -350,9 +316,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  Log an INACTIVE zone to audit_logs
-  // ─────────────────────────────────────────────────────────
   Future<void> _logInactiveZone({
     required int zoneId,
     required DateTime lastSeen,
@@ -371,11 +334,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
     } catch (_) {}
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  Deduplicate threshold breach logs (avoid spamming on
-  //  every 1-second reading). Tracks last-logged time per
-  //  zone+type in memory.
-  // ─────────────────────────────────────────────────────────
   final Map<String, DateTime> _lastThresholdLog = {};
   static const Duration _thresholdLogCooldown = Duration(minutes: 2);
 
@@ -400,9 +358,6 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
     } catch (_) {}
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  Helpers
-  // ─────────────────────────────────────────────────────────
   NoiseLevel _resolveNoiseLevel(double db) {
     final s = SettingsService.instance.settings.value;
     if (db >= s.noiseCriticalThreshold) return NoiseLevel.critical;
@@ -415,8 +370,7 @@ class SupabaseTelemetryRepository implements TelemetryRepository {
 
   String _getDepartmentShort(int zoneId) => ZoneNames.forZoneId(zoneId);
 
-  /// Persists the fused SOURCE model's latest prediction. Best-effort —
-  /// a failure here should never interrupt the live-zones stream.
+
   Future<void> _recordSourcePrediction({
     required Map<String, dynamic> sourceResult,
     required double csRms,
